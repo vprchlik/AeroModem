@@ -11,7 +11,7 @@ Status legend: ⬜ not started · 🟨 in progress · ✅ done.
 
 | Phase | Name | Status |
 |---|---|---|
-| 0 | Scaffold | ⬜ |
+| 0 | Scaffold | ✅ |
 | 1 | Audio plumbing + visualizer | ⬜ |
 | 2 | Channel simulator | ⬜ |
 | 3 | Sync (chirp preamble) | ⬜ |
@@ -329,6 +329,9 @@ seed ⇒ same sequence; distribution sanity (mean/variance bounds).
 
 **Accept:** `npm test` green in Node; `npm run build` produces a static bundle;
 CI workflow passes.
+
+**Status:** ✅ Done (2026-07-31). See `PROGRESS.md` for measured bin ranges and rate estimates
+(FAST 9580.8 bit/s, QUIET 3198.3 bit/s net).
 
 ---
 

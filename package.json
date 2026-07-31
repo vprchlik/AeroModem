@@ -1,0 +1,21 @@
+{
+  "name": "aeromodem",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Browser-based phone-to-phone file transfer over sound (OFDM + fountain coding)",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.2",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.5",
+    "vitest": "^3.2.4"
+  }
+}

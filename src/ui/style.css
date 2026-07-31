@@ -1,0 +1,154 @@
+/* AeroModem Phase 0 shell — calm, single-composition landing, no card clutter. */
+
+:root {
+  --bg0: #0c1418;
+  --bg1: #132028;
+  --ink: #e8f0f2;
+  --muted: #8aa0a8;
+  --accent: #3db8a0;
+  --accent-dim: #2a7f6e;
+  --line: rgba(232, 240, 242, 0.12);
+  --font-display: "Fraunces", "Iowan Old Style", Georgia, serif;
+  --font-body: "Source Sans 3", "Source Sans Pro", "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", "Consolas", monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  font-family: var(--font-body);
+  color: var(--ink);
+  background:
+    radial-gradient(1200px 700px at 15% -10%, #1a3a40 0%, transparent 55%),
+    radial-gradient(900px 600px at 90% 10%, #243018 0%, transparent 50%),
+    linear-gradient(165deg, var(--bg0), var(--bg1) 55%, #0a1014);
+  line-height: 1.45;
+}
+
+#app {
+  max-width: 42rem;
+  margin: 0 auto;
+  padding: 2.5rem 1.25rem 4rem;
+}
+
+.hero {
+  margin-bottom: 2rem;
+}
+
+.brand {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: clamp(2.75rem, 8vw, 4rem);
+  letter-spacing: -0.02em;
+  margin: 0 0 0.4rem;
+  line-height: 1.05;
+}
+
+.tagline {
+  margin: 0;
+  color: var(--muted);
+  font-size: 1.05rem;
+  max-width: 28rem;
+}
+
+.mode-toggle {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.mode-toggle button,
+.role-btn,
+.back {
+  font: inherit;
+  cursor: pointer;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink);
+  padding: 0.55rem 1rem;
+}
+
+.mode-toggle button.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.mode-toggle .meta {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.mode-toggle code,
+#preset-id {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+}
+
+.rate {
+  color: var(--muted);
+  font-size: 0.92rem;
+  margin: 0 0 1.75rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.panel h1 {
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: 1.75rem;
+  margin: 0 0 1rem;
+}
+
+.roles {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-bottom: 1.5rem;
+}
+
+.role-btn {
+  text-align: left;
+  font-size: 1.15rem;
+  padding: 1rem 1.15rem;
+  border-color: var(--accent-dim);
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.role-btn:hover {
+  border-color: var(--accent);
+  background: rgba(61, 184, 160, 0.08);
+}
+
+.stub,
+.footnote {
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+.footnote a {
+  color: var(--accent);
+}
+
+.back {
+  margin-top: 1.25rem;
+}
+
+@media (min-width: 520px) {
+  .roles {
+    flex-direction: row;
+  }
+
+  .role-btn {
+    flex: 1;
+  }
+}
