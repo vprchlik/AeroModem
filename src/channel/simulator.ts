@@ -127,13 +127,23 @@ const phoneFirCache = new Map<number, Float32Array>();
  *  @48 kHz), removed by `filterAligned` so output stays sample-aligned. */
 export const PHONE_FIR_TAPS = 511;
 
-function phoneBandLimitFir(fs: number): Float32Array {
+/**
+ * Nominal phone transducer FIR — exported so the receiver's channel-matched
+ * preamble correlator (modem/sync.ts) can use the same nominal response the
+ * simulator applies. Both ends of a real link ship this same web app, so the
+ * nominal model is common knowledge.
+ */
+export function phoneTransducerFir(fs: number): Float32Array {
   let h = phoneFirCache.get(fs);
   if (!h) {
     h = designFirFromMagnitude(phoneMagnitude, PHONE_FIR_TAPS, fs);
     phoneFirCache.set(fs, h);
   }
   return h;
+}
+
+function phoneBandLimitFir(fs: number): Float32Array {
+  return phoneTransducerFir(fs);
 }
 
 /** Anti-image/anti-alias lowpass for the 2× oversampled nonlinearity stage. */

@@ -172,3 +172,83 @@ drift measured **19000.950 Hz** (expected 19000.95); spurious energy at 17–18.
 fails the test.
 
 **Tests: 95/95 green** (10 new audit assertions).
+
+---
+
+## Phase 3 — Sync (2026-07-31)
+
+**Delivered:** `linearChirp` (Tukey-tapered), `PreambleDetector` (streaming FFT
+overlap-save, normalized correlation coefficient, energy-floored denominator,
+refractory peak picking, quadratic sub-sample interpolation), `detectPreamble`,
+`scripts/sync-sweep.ts` (curve generator, writes `artifacts/sync-sweep.csv`).
+
+**Correlator choice: channel-matched template (receiver-side), not TX pre-emphasis.**
+Pre-emphasis was rejected because flattening the received spectrum would need +15…30 dB
+of boost at the top of the band — impossible within digital full scale without
+sacrificing total radiated energy, and outright unrealizable for quiet mode
+(≥28 dB at 23 kHz). PHAT whitening was rejected because dividing by magnitude
+amplifies noise exactly in the transducer's dead bands at low SNR.
+
+**Measured A/B, raw vs matched template (noiseless, PSR = peak vs max |corr| outside
+±16 samples within ±8192):**
+
+| Metric | Raw template | Matched template |
+|---|---|---|
+| Fast mode PSR | 33.22 dB | 32.72 dB |
+| Fast mode peak corr | 0.962 | 1.000 |
+| Quiet mode PSR | **15.66 dB** | **10.35 dB** |
+| Quiet mode peak corr | 0.837 | 1.000 |
+| Quiet det. @ −3 dB hallway (60 runs) | 52/60 | **60/60** |
+| Quiet det. @ −6 dB hallway (60 runs) | 36/60 | **53/60** |
+| Quiet timing P95 (detected runs) | 2.6 samples | 5.4 samples |
+
+Honest finding: the matched template *worsens* PSR in quiet mode (it concentrates
+weight at the strong band edge, shrinking effective bandwidth), but wins where it
+matters — detection at breakdown SNR (+17 percentage points at −6 dB) — and its peak
+correlation is calibrated to 1.0, making the detection threshold meaningful. Timing
+cost (P95 5.4 vs 2.6 samples) is far inside the 8-sample budget. Matched is the default.
+
+**Detection/timing curves — fast mode, 200 seeded runs/point, ALL impairments
+simultaneously (random offset [0, 48000], +50 ppm drift, AGC wander, nonlinearity,
+phone speaker, in-band AWGN):**
+
+| SNR (dB) | small-room det% / P95 | living-room det% / P95 | hallway det% / P95 |
+|---|---|---|---|
+| −12.5 | 89.5 / 0.19 | 83.0 / 0.19 | 76.5 / 0.19 |
+| −10 | **100 / 0.18** | **100 / 0.18** | 90.5 / 0.18 |
+| −7.5 | 100 / 0.17 | 100 / 0.17 | **100 / 0.18** |
+| −5 | 100 / 0.17 | 100 / 0.17 | 100 / 0.18 |
+| 0 | 100 / 0.17 | 100 / 0.18 | 100 / 0.17 |
+| +5…+20 | 100 / 0.17 | 100 / 0.17 | 100 / 0.17 |
+
+(Median |err| 0.07–0.11 samples throughout; detection is threshold-limited, not
+timing-limited. The 85 ms × 18 kHz chirp has ≈32 dB of correlation processing gain,
+which is why breakdown sits near −12 dB in-band.)
+
+**Breakdown SNRs (<99% detection):** small-room −12.5 dB · living-room −12.5 dB ·
+hallway between −10 and −7.5 dB.
+
+**Regression operating points (pinned in `tests/modem/sync.test.ts`, 100 runs each):**
+small-room & living-room at **−7.5 dB** (breakdown + 5 dB), hallway at **−5 dB**
+(last fully-clean point + 2.5 dB). Thresholds: detection ≥ 99%, median ≤ 0.5,
+P95 ≤ 2 samples (measured 0.17–0.19; ~10× headroom, ≪ the 8-sample Phase 4 budget).
+
+**Hallway timing did NOT smear** despite 40.7% of RIR energy past the CP: with
+DRR = 0 dB the direct path remains the strongest single coherent component, so the
+correlation peak stays sharp. The predicted ≤ 8-sample risk did not materialize —
+no threshold loosening was needed.
+
+**Worst-case-quiet failure curve (100 runs/point):** 0 dB **100%** · −3 dB **96%** ·
+−6 dB **74%** · −9 dB **43%** · −12 dB **3%**. Sync at the preset's 0 dB point
+*succeeds* (the quiet-band chirp still has ≈27 dB of correlation gain); true failure
+onset is just below −3 dB. Pinned two-sided at −9 dB (must stay in 15–70%) so an
+accidentally-optimistic channel change trips the test.
+
+**Detector hardening found by testing:** near-digital-silence windows after a burst
+caused 0/0 correlation spikes (spurious detections). Fixed with an energy floor at
+−30 dB below the loudest window seen. False-alarm test: 60 s of noise + 40 music-like
+bursts ⇒ **0 detections**.
+
+**Tests: 104/104 green.**
+
+*Next: Phase 4 — OFDM modem core.*
