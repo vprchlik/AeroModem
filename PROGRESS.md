@@ -82,3 +82,35 @@ Paste results into this section when done (browser, OS, rawOk yes/no, two-tab vi
 **Follow-up fix (same phase):** tone status now clears after 1.5 s; `play()` resumes a suspended AudioContext and uses `AudioBufferSourceNode` for one-shots; UI defaults to 1 kHz with preset buttons; frequency axis labeled on the Y side (top = 24 kHz).
 
 *Standing by for user signal before Phase 2 — Channel simulator.*
+
+---
+
+## Phase 2 — Channel simulator (2026-07-31)
+
+**Delivered:** `simulateChannel(samples, opts)` — composable impairments in physical order
+(clip → speaker band-limit → RIR → clock drift → AGC wander → AWGN → start offset), all
+randomness from `splitmix32(opts.seed)`; synthetic RIR presets with stats; FIR design +
+FFT convolution; fractional resampler; Welch band-power / SNR / tone-frequency / THD
+measurement helpers; DSP-purity lint test.
+
+**Measured vs target (all automated, seeded):**
+
+| Impairment | Target | Measured |
+|---|---|---|
+| AWGN SNR accuracy (0/10/20/30 dB × 10 seeds) | ±0.5 dB | mean err −0.004 dB, worst \|err\| **0.074 dB** |
+| Phone band-limit @ 10 kHz | < 1 dB | **0.000 dB** |
+| Phone band-limit @ 22.5 kHz | ≥ 30 dB | **131.7 dB** |
+| RIR small-room DRR / τ_rms | 6 dB ± 2 / 3–20 ms | **6.00 dB / 10.8 ms** |
+| RIR living-room DRR / τ_rms | 3 dB ± 2 / 12–45 ms | **3.00 dB / 23.8 ms** |
+| RIR hallway DRR / τ_rms | 0 dB ± 2 / 25–90 ms | **−0.00 dB / 43.1 ms** |
+| Clock drift +50 ppm on 10 kHz | 10000.5 ± 0.1 Hz | **10000.5009 Hz** |
+| Clock drift −50 ppm on 10 kHz | 9999.5 ± 0.1 Hz | **9999.4977 Hz** |
+| THD clean sine | < 1e-3 | **7.1e-15** |
+| THD clipped @ −6 dBFS | > 0.05 | **0.055** |
+| Determinism | bit-identical per seed | verified (full composite opts) |
+
+**Tests:** 85/85 green (`npm test`), including 45 new Phase 2 assertions and a purity
+test that scans `src/dsp`, `src/channel`, `src/util` for Web Audio/DOM references and
+`Math.random`.
+
+*Next: Phase 3 — Sync (chirp preamble).*

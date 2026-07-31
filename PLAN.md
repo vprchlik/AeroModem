@@ -13,7 +13,7 @@ Status legend: ⬜ not started · 🟨 in progress · ✅ done.
 |---|---|---|
 | 0 | Scaffold | ✅ |
 | 1 | Audio plumbing + visualizer | ✅ |
-| 2 | Channel simulator | ⬜ |
+| 2 | Channel simulator | ✅ |
 | 3 | Sync (chirp preamble) | ⬜ |
 | 4 | OFDM modem core | ⬜ |
 | 5 | Framing + LT fountain code | ⬜ |
@@ -442,6 +442,10 @@ clean. Determinism: same seed ⇒ bit-identical output.
 
 **Accept:** all impairment tests pass with the numeric tolerances above; `PROGRESS.md`
 records measured-vs-target tables.
+
+**Status:** ✅ Done (2026-07-31). AWGN worst |error| 0.074 dB across {0,10,20,30} dB × 10
+seeds; 22.5 kHz attenuation 131.7 dB with 10 kHz at 0.000 dB; DRR exact per preset;
+drift +50 ppm → 10000.5009 Hz. Full tables in `PROGRESS.md`. 85/85 tests green.
 
 ---
 
