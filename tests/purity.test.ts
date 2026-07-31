@@ -7,7 +7,7 @@ import { join } from 'node:path';
  * globals or import from src/audio or src/ui. The identical code must run in
  * Node (tests, bench CLI) and the browser.
  */
-const PURE_DIRS = ['src/dsp', 'src/channel', 'src/util'];
+const PURE_DIRS = ['src/dsp', 'src/channel', 'src/util', 'src/code', 'src/link'];
 
 const FORBIDDEN: { name: string; re: RegExp }[] = [
   { name: 'AudioContext', re: /\bAudioContext\b/ },

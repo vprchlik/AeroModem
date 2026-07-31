@@ -55,6 +55,19 @@ export const RIR_SPECS: Record<string, RirSpec> = {
     earlyCount: 8,
     expectedDelaySpreadMs: [25, 90],
   },
+  /**
+   * Off-axis / shadowed direct path: DRR ≈ −3 dB so early reflections dominate.
+   * Observation-only — do not retune sync or modem acceptance against this preset.
+   * Living-room-like RT60 with a weaker direct tap (listener not facing the speaker).
+   */
+  'off-axis': {
+    rt60Sec: 0.5,
+    drrDb: -3,
+    earlyMinMs: 2,
+    earlyMaxMs: 14,
+    earlyCount: 8,
+    expectedDelaySpreadMs: [15, 60],
+  },
 };
 
 export type RirPreset = keyof typeof RIR_SPECS;

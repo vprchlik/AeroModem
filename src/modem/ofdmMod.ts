@@ -27,6 +27,12 @@ import { assert } from '../util/assert';
 export interface ModulatorOptions {
   /** Override cfg.dataSymbolsPerBurst (long-transmission tests). */
   dataSymbols?: number;
+  /**
+   * Per-data-symbol modulation (length = dataSymbols). When set, every data
+   * carrier in symbol s uses `symbolMods[s]` — used by Phase 5 for BPSK
+   * headers + QPSK/16-QAM payloads inside the same burst.
+   */
+  symbolMods?: Modulation[];
 }
 
 export class OfdmModulator {
@@ -39,8 +45,10 @@ export class OfdmModulator {
   private readonly re: Float32Array;
   private readonly im: Float32Array;
   private readonly timeGain: number;
-  /** Modulation per data carrier (uniform unless bit-loading configured). */
-  private readonly mods: Modulation[];
+  /** Default per-carrier mods when symbolMods is not used. */
+  private readonly carrierMods: Modulation[];
+  /** Optional per-symbol override (uniform across carriers within the symbol). */
+  private readonly symbolMods: Modulation[] | null;
 
   constructor(cfg: ModemConfig, opts: ModulatorOptions = {}) {
     this.cfg = cfg;
@@ -52,15 +60,25 @@ export class OfdmModulator {
     this.re = new Float32Array(cfg.fftSize);
     this.im = new Float32Array(cfg.fftSize);
 
-    this.mods = [];
+    this.carrierMods = [];
     for (let i = 0; i < this.d.dataBins.length; i++) {
       if (Array.isArray(cfg.bitLoading)) {
         // bitLoading array is indexed by LOCAL active-carrier index.
         const local = this.d.dataBins[i]! - this.d.binLow;
-        this.mods.push(cfg.bitLoading[local]!);
+        this.carrierMods.push(cfg.bitLoading[local]!);
       } else {
-        this.mods.push(cfg.bitLoading.uniform);
+        this.carrierMods.push(cfg.bitLoading.uniform);
       }
+    }
+
+    if (opts.symbolMods) {
+      assert(
+        opts.symbolMods.length === this.dataSymbols,
+        `symbolMods length ${opts.symbolMods.length} ≠ dataSymbols ${this.dataSymbols}`,
+      );
+      this.symbolMods = opts.symbolMods.slice();
+    } else {
+      this.symbolMods = null;
     }
 
     // Time gain: unit-power carriers → time RMS = sqrt(2·Σp)/N (Hermitian pair
@@ -72,16 +90,32 @@ export class OfdmModulator {
     this.timeGain = (cfg.txAmplitude * 0.35) / naturalRms;
   }
 
-  /** Coded bits carried by one data symbol. */
+  /** Mods used for data symbol `s`. */
+  modsForSymbol(s: number): Modulation[] {
+    if (this.symbolMods) {
+      const m = this.symbolMods[s]!;
+      return this.d.dataBins.map(() => m);
+    }
+    return this.carrierMods;
+  }
+
+  /** Coded bits carried by one data symbol (symbol 0 if schedule varies). */
   get bitsPerSymbol(): number {
+    return this.bitsPerDataSymbol(0);
+  }
+
+  bitsPerDataSymbol(s: number): number {
+    const mods = this.modsForSymbol(s);
     let b = 0;
-    for (const m of this.mods) b += MOD_BITS[m];
+    for (const m of mods) b += MOD_BITS[m];
     return b;
   }
 
   /** Coded bits carried by one whole burst. */
   get bitsPerBurst(): number {
-    return this.bitsPerSymbol * this.dataSymbols;
+    let total = 0;
+    for (let s = 0; s < this.dataSymbols; s++) total += this.bitsPerDataSymbol(s);
+    return total;
   }
 
   /** Total burst length in samples. */
@@ -135,13 +169,14 @@ export class OfdmModulator {
       for (let p = 0; p < d.pilotBins.length; p++) {
         this.setBin(d.pilotBins[p]!, this.pilotVals[p]!, 0);
       }
-      // Data carriers (may be mixed modulations under bit-loading).
+      // Data carriers (may be mixed modulations under bit-loading / symbolMods).
+      const mods = this.modsForSymbol(s);
       let c = 0;
       while (c < d.dataBins.length) {
         // Group consecutive carriers with the same modulation for mapCarriers.
-        const mod = this.mods[c]!;
+        const mod = mods[c]!;
         let end = c + 1;
-        while (end < d.dataBins.length && this.mods[end] === mod) end++;
+        while (end < d.dataBins.length && mods[end] === mod) end++;
         bitPos += mapCarriers(bits, bitPos, mod, end - c, carRe, carIm, c);
         c = end;
       }

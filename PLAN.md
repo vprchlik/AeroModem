@@ -16,7 +16,7 @@ Status legend: ⬜ not started · 🟨 in progress · ✅ done.
 | 2 | Channel simulator | ✅ |
 | 3 | Sync (chirp preamble) | ✅ |
 | 4 | OFDM modem core | ✅ |
-| 5 | Framing + LT fountain code | ⬜ |
+| 5 | Framing + LT fountain code | 🟨 |
 | 6 | End-to-end product | ⬜ |
 | 7 | Adaptation (bit-loading) | ⬜ |
 | 8 | Benchmark & writeup | ⬜ |
@@ -271,10 +271,17 @@ find numeric literals in DSP code that should be config are treated as bugs.
 
 ## 5. Frame and burst format
 
-**Frame** (fixed size per config; fast-mode default payload 256 B):
+**Frame geometry (Phase 5 — whole number of OFDM symbols).** Header and payload
+occupy separate OFDM-symbol regions. The header is **always BPSK** with rate-1/2
+convolutional coding + **3× repetition** (soft-combined at the receiver),
+regardless of payload modulation. The payload is rate-1/2 FEC at the configured
+modulation. Both regions are bit-interleaved across subcarriers **and** across
+the OFDM symbols of that region.
+
+Info layout before coding:
 
 ```
-| header 24 B | payload = blockSize B | CRC-32 4 B |   → conv-encode (+6 tail bits) → interleave → map to carriers
+| header 24 B | payload = blockSize B | CRC-32 4 B |
 ```
 
 Header layout (little-endian, 24 bytes total):
@@ -290,12 +297,31 @@ Header layout (little-endian, 24 bytes total):
 | flags/mode | 2 | config profile id, FEC rate, reserved |
 | headerCrc | 2 | CRC-16/CCITT over bytes 0–21 |
 
-The header is additionally protected by being part of the conv-coded frame; `headerCrc`
-lets the receiver reject a frame early. Full-frame CRC-32 (poly 0xEDB88320) is the final
-arbiter; failures are silently dropped (fountain code absorbs the loss).
+Coded → interleaved → mapped:
 
-**Burst:** `chirp | guard | T1 T2 (training) | D1 … D32 (data symbols)`. Data symbols carry
-a whole number of frames per burst; padding bits fill the remainder (accounted in budgets).
+| Region | Modulation | Coding | Symbols (FAST_48K, 683 data carriers) | Symbols (QUIET_48K, 228) |
+|---|---|---|---|---|
+| Header | BPSK | rate-1/2 + 3× rep | **2** | **6** |
+| Payload (BPSK) | BPSK | rate-1/2 | **7** (total frame **9**) | **19** (total **25**) |
+| Payload (QPSK) | QPSK | rate-1/2 | **4** (total frame **6**) | **10** (total **16**) |
+| Payload (16-QAM) | 16-QAM | rate-1/2 | **2** (total frame **4**) | **5** (total **11**) |
+
+Payload bytes per frame = `blockSize` = **256** at every modulation (fixed source
+block). With `dataSymbolsPerBurst = 32`: FAST QPSK packs **5 frames/burst**
+(2 leftover symbols); QUIET QPSK packs **2 frames/burst**.
+
+A lost header loses the whole frame regardless of payload FEC — hence the
+heavier header protection. Full-frame CRC-32 (poly 0xEDB88320) is the final
+payload arbiter; failures are silently dropped (fountain code absorbs the loss).
+
+**Burst:** `chirp | guard | T1 T2 (training) | D1 … D32 (data symbols)`. Data
+symbols carry a whole number of frames per burst; leftover symbols are
+zero-filled BPSK (accounted in budgets).
+
+**Off-axis RIR preset (observation only):** `'off-axis'` with DRR ≈ −3 dB
+simulates a shadowed / off-axis direct path where early reflections dominate.
+Do **not** retune sync or modem acceptance against it — it exists so the
+dominant-early-reflection failure mode is not first seen on hardware.
 
 ---
 
@@ -647,15 +673,23 @@ Numbers in `PROGRESS.md`.
 
 ### Phase 5 — Framing + LT fountain code
 
-**Goal:** file → endless packet stream → file, robust to arbitrary frame loss.
+**Goal:** file → endless packet stream → file, robust to arbitrary frame loss;
+headers far more robust than payloads; coded bits interleaved across subcarriers
+and OFDM symbols; LT overhead **measured**, not assumed.
 
-**Files:** `src/code/crc32.ts`, `src/code/convolutional.ts`, `src/code/viterbi.ts`,
-`src/code/interleave.ts`, `src/code/soliton.ts`, `src/code/lt.ts`, `src/code/frame.ts`,
-`src/link/sender.ts`, `src/link/receiver.ts`.
+**Files:** `src/code/crc32.ts`, `src/code/crc16.ts`, `src/code/convolutional.ts`,
+`src/code/viterbi.ts`, `src/code/interleave.ts`, `src/code/soliton.ts`,
+`src/code/lt.ts`, `src/code/geometry.ts`, `src/code/frame.ts`,
+`src/link/sender.ts`, `src/link/receiver.ts`. Carry-over: `'off-axis'` RIR
+preset (DRR ≈ −3 dB) in `src/channel/rir.ts` — observation only.
 
 **Key signatures:**
 
 ```ts
+// code/geometry.ts — whole-symbol frame layout (see §5)
+export function frameGeometry(cfg: ModemConfig): FrameGeometry;
+export function burstSymbolMods(cfg: ModemConfig): Modulation[]; // BPSK hdr + payload mod
+
 // code/soliton.ts
 export function robustSolitonCdf(K: number, c: number, delta: number): Float64Array;
 export function sampleDegree(cdf: Float64Array, rng: () => number): number;
@@ -664,53 +698,60 @@ export function sampleDegree(cdf: Float64Array, rng: () => number): number;
 export class LtEncoder {
   constructor(source: Uint8Array, blockSize: number, sessionSeed: number, cfg: ModemConfig);
   readonly K: number;
-  /** Deterministic packet for a given seed: degree + neighbor set from splitmix32(seed). */
-  packet(packetSeed: number): Uint8Array;      // XOR of chosen source blocks
+  packet(packetSeed: number): Uint8Array;
 }
 export class LtDecoder {
   constructor(fileLength: number, K: number, blockSize: number, cfg: ModemConfig);
-  /** Peeling; on stall with ≥K packets, Gaussian elimination over the residual system. */
   addPacket(packetSeed: number, payload: Uint8Array): void;
-  readonly decodedBlocks: number;              // for the UI block grid
+  readonly decodedBlocks: number;
   readonly complete: boolean;
   result(): Uint8Array | null;
 }
 
-// code/frame.ts
-export function buildFrame(h: FrameHeader, payload: Uint8Array): Uint8Array;        // + CRC32
-export function parseFrame(bytes: Uint8Array): { header: FrameHeader; payload: Uint8Array } | null; // null on CRC fail
+// code/frame.ts — separate BPSK header region + payload region
+export function encodeFrame(h: FrameHeader, payload: Uint8Array, cfg: ModemConfig, opts?: { interleave?: boolean }): EncodedFrame;
+export function decodeFrame(llrs: Float32Array, cfg: ModemConfig, opts?: { interleave?: boolean }): { frame: DecodedFrame | null; stats: FrameDecodeStats };
 
-// code/convolutional.ts / viterbi.ts
-export function convEncode(bits: Uint8Array, rate: FecRate): Uint8Array;
-export function viterbiDecode(llrs: Float32Array, rate: FecRate): Uint8Array;
-
-// link/sender.ts
+// link/sender.ts / receiver.ts
 export class FileSender {
   constructor(file: Uint8Array, cfg: ModemConfig, sessionSeed: number);
-  nextBurstBits(): Uint8Array;   // frames for one burst; endless (packetSeed increments)
+  nextBurstBits(): Uint8Array;
+  readonly symbolMods: Modulation[];
   readonly packetsSent: number;
 }
-// link/receiver.ts
 export class FileReceiver {
   constructor(cfg: ModemConfig);
-  pushLlrs(llrs: Float32Array): void;          // deinterleave → viterbi → frames → LT
-  readonly progress: ReceiveProgress;          // blocks decoded, frames ok/bad, session info
+  pushLlrs(llrs: Float32Array): void;
+  readonly progress: ReceiveProgress; // includes framesHeaderFail vs framesPayloadFail
   onComplete(cb: (file: Uint8Array) => void): void;
 }
 ```
 
-**Tests:** `tests/code/crc32.test.ts`, `conv.test.ts` (encode/decode round-trip at
-LLR-clean; coded BER at 4 dB Eb/N0 ≪ uncoded), `soliton.test.ts` (distribution matches
-analytic PMF, chi-squared over 1e5 seeded draws), `lt.test.ts` — **100 seeded runs**,
-K = 400 (100 kB / 256 B): decode success 100%, mean ε ≤ 15% (expect ~5–8% with GE
-fallback; record distribution), any-order and duplicate-packet delivery.
-`tests/link/e2e-loss.test.ts` — 100 kB seeded file through frame layer with **20% random
-frame loss**: file reconstructed, SHA-256 matches. `tests/link/e2e-channel.test.ts` —
-full stack (sender → modulator → `simulateChannel` @ 15 dB, living-room, drift →
-demodulator → receiver): 20 kB file reconstructs; records airtime and goodput.
+**LT parameters (chosen, then measured):** `c = 0.05`, `δ = 0.05` (Luby mid-range;
+modest average degree; GE fallback covers peeling variance). For small K,
+`R = c·ln(K/δ)·√K` is clamped to ≥ 1 — the robust spike is weak and **mean ε is
+expected to exceed 15%**; that is reported as a tradeoff, not tuned away.
+K under test = fileSize / 256 B blocks: **K = 4 (1 KiB), 40 (10 KiB), 391 (≈100 kB)**.
 
-**Accept:** 100 kB survives 20% frame loss; mean ε ≤ 15% over 100 seeded runs (both as
-automated tests); PROGRESS.md logs the measured ε distribution and full-stack goodput.
+**Tests:**
+- Unit: CRC, conv/Viterbi round-trip + soft gain, interleaver invertibility +
+  symbol-spreading, soliton χ², frame geometry numbers, clean-LLR frame round-trip.
+- **Interleave A/B:** same living-room @ 20 dB channel, interleaving on vs off →
+  frame-success rates for both (PROGRESS.md).
+- **Header vs payload:** failure rates reported separately at Phase 4 operating
+  SNRs (small/living/hallway @ 20 dB in-band).
+- **LT ε:** ≥200 seeded runs per K; report mean / P95 / worst.
+- **100 kB @ 20% random frame loss:** SHA-256 match.
+- **Full pipeline:** 20 kB through modulator → `simulateChannel` (phone + RIR +
+  drift + nonlinearity) → demod → receiver for small-room / living-room /
+  hallway at 20 dB (Phase 4 BER operating point). Off-axis is **not** an
+  acceptance preset.
+
+**Accept:** 100 kB survives 20% frame loss; mean ε ≤ 15% at K≥40 (small-K
+exception documented); full-pipeline reconstructs at Phase 4 operating points;
+PROGRESS.md logs all measured numbers.
+
+**Status:** 🟨 in progress.
 
 ---
 

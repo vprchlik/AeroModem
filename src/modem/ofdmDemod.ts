@@ -42,6 +42,8 @@ export interface DemodOptions {
    * is resampled by 1/(1+ε̂) and demodulated again.
    */
   driftCorrection?: boolean;
+  /** Per-data-symbol modulation schedule (must match the modulator). */
+  symbolMods?: Modulation[];
 }
 
 export interface SymbolDiagnostics {
@@ -75,7 +77,8 @@ export class OfdmDemodulator {
   private readonly cpBackoff: number;
   private readonly fft: FFT;
   private readonly train: Float32Array;
-  private readonly mods: Modulation[];
+  private readonly carrierMods: Modulation[];
+  private readonly symbolMods: Modulation[] | null;
 
   private readonly driftCorrection: boolean;
 
@@ -87,21 +90,49 @@ export class OfdmDemodulator {
     this.driftCorrection = opts.driftCorrection ?? true;
     this.fft = new FFT(cfg.fftSize);
     this.train = trainingValues(cfg, this.d);
-    this.mods = [];
+    this.carrierMods = [];
     for (let i = 0; i < this.d.dataBins.length; i++) {
       if (Array.isArray(cfg.bitLoading)) {
         const local = this.d.dataBins[i]! - this.d.binLow;
-        this.mods.push(cfg.bitLoading[local]!);
+        this.carrierMods.push(cfg.bitLoading[local]!);
       } else {
-        this.mods.push(cfg.bitLoading.uniform);
+        this.carrierMods.push(cfg.bitLoading.uniform);
       }
+    }
+    if (opts.symbolMods) {
+      assert(
+        opts.symbolMods.length === this.dataSymbols,
+        `symbolMods length ${opts.symbolMods.length} ≠ dataSymbols ${this.dataSymbols}`,
+      );
+      this.symbolMods = opts.symbolMods.slice();
+    } else {
+      this.symbolMods = null;
     }
   }
 
-  get llrsPerSymbol(): number {
+  modsForSymbol(s: number): Modulation[] {
+    if (this.symbolMods) {
+      const m = this.symbolMods[s]!;
+      return this.d.dataBins.map(() => m);
+    }
+    return this.carrierMods;
+  }
+
+  llrsPerDataSymbol(s: number): number {
+    const mods = this.modsForSymbol(s);
     let b = 0;
-    for (const m of this.mods) b += MOD_BITS[m];
+    for (const m of mods) b += MOD_BITS[m];
     return b;
+  }
+
+  get llrsPerSymbol(): number {
+    return this.llrsPerDataSymbol(0);
+  }
+
+  get llrsPerBurst(): number {
+    let t = 0;
+    for (let s = 0; s < this.dataSymbols; s++) t += this.llrsPerDataSymbol(s);
+    return t;
   }
 
   /** FFT one window at absolute position `at`, extract active bins. */
@@ -226,7 +257,7 @@ export class OfdmDemodulator {
 
     const tracker = new PilotTracker(cfg, d, est.hRe, est.hIm);
     const nData = d.dataBins.length;
-    const llrs = new Float32Array(this.llrsPerSymbol * this.dataSymbols);
+    const llrs = new Float32Array(this.llrsPerBurst);
     const eqRe: Float32Array[] = [];
     const eqIm: Float32Array[] = [];
     const perSymbol: SymbolDiagnostics[] = [];
@@ -302,11 +333,12 @@ export class OfdmDemodulator {
       }
 
       // Demap contiguous same-modulation runs with per-carrier CSI weights.
+      const mods = this.modsForSymbol(s);
       let c0 = 0;
       while (c0 < nData) {
-        const mod = this.mods[c0]!;
+        const mod = mods[c0]!;
         let end = c0 + 1;
-        while (end < nData && this.mods[end] === mod) end++;
+        while (end < nData && mods[end] === mod) end++;
         llrPos += demapCarriers(
           re,
           im,
