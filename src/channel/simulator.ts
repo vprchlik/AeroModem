@@ -12,10 +12,16 @@
 
 import { splitmix32, gaussianPair } from '../util/prng';
 import { assert } from '../util/assert';
-import { designBandpassFir, filterAligned, fftConvolve } from '../dsp/filters';
+import {
+  designFirFromMagnitude,
+  designLowpassFir,
+  filterAligned,
+  fftConvolve,
+} from '../dsp/filters';
 import { resampleFractional } from '../dsp/resample';
 import { bandPowerDb } from '../dsp/measure';
 import { makeRir, RIR_SPECS, type RirPreset } from './rir';
+import type { ModemConfig } from '../config';
 
 export interface ChannelOpts {
   /** Drives ALL randomness (noise, RIR, offsets). Same seed ⇒ same output. */
@@ -27,8 +33,18 @@ export interface ChannelOpts {
   clip?: { thresholdDbfs: number };
 
   /**
-   * Speaker/mic band-limit. 'phone': ≈200 Hz…21 kHz passband with steep
-   * Blackman-FIR roll-off (≥30 dB by 22.5 kHz). 'flat': no filtering.
+   * Speaker/mic nonlinearity: y = x + a2·x² − a3·x³, applied at 2× oversampling
+   * so harmonics beyond Nyquist are removed (as a real mic's anti-alias filter
+   * would) instead of aliasing back in-band. Audible-band signals leak real
+   * 2nd-harmonic energy into the 17–23 kHz quiet band.
+   */
+  nonlinearity?: { secondOrder?: number; thirdOrder?: number };
+
+  /**
+   * Speaker/mic band-limit. 'phone': realistic transducer response — 2nd-order
+   * Butterworth HPF at 350 Hz + smooth 9th-order-Butterworth-magnitude LPF
+   * knee at 15.7 kHz (≈54 dB/oct asymptotic slope, ≈28 dB down at 22.5 kHz).
+   * 'flat': no filtering.
    */
   bandLimit?: { speakerModel: 'phone' | 'flat' };
 
@@ -41,13 +57,22 @@ export interface ChannelOpts {
   /** Slow receiver gain wander (models a browser that ignored autoGainControl:false). */
   agcWander?: boolean;
 
-  /** AWGN at this SNR (dB), measured in `snrBandHz` (default: full 0…Nyquist). */
+  /**
+   * AWGN at this SNR (dB), defined IN-BAND over `snrBandHz`.
+   * `snrBandHz` is REQUIRED when `snrDb` is set — take it from the modem's
+   * active band (see `activeBandHz(cfg)`) so "10 dB" means what the receiver
+   * experiences, not a full-band figure that flatters narrowband modes.
+   */
   snrDb?: number;
-  /** Band over which snrDb is defined, [loHz, hiHz]. */
   snrBandHz?: [number, number];
 
   /** Prepend a seeded-uniform random count of silence samples in [min, max]. */
   startOffsetSamples?: [number, number];
+}
+
+/** The modem's active band [lo, hi] Hz — the SNR reference band for simulation. */
+export function activeBandHz(cfg: ModemConfig): [number, number] {
+  return [cfg.bandLowHz, cfg.bandHighHz];
 }
 
 /** Named opts presets for tests/bench (seed & sampleRate filled by caller). */
@@ -58,27 +83,94 @@ export const CHANNEL_PRESETS: Record<string, Omit<ChannelOpts, 'seed' | 'sampleR
     bandLimit: { speakerModel: 'phone' },
     rir: 'living-room',
     snrDb: 20,
+    snrBandHz: [2000, 20000],
   },
   'hallway-10db-drift': {
     bandLimit: { speakerModel: 'phone' },
     rir: 'hallway',
     snrDb: 10,
+    snrBandHz: [2000, 20000],
     clockDriftPpm: 30,
   },
+  /** Difficulty guard: everything bad at once, quiet-mode band. */
+  'worst-case-quiet': {
+    clip: { thresholdDbfs: -6 },
+    nonlinearity: {},
+    bandLimit: { speakerModel: 'phone' },
+    rir: 'hallway',
+    clockDriftPpm: 50,
+    agcWander: true,
+    snrDb: 0,
+    snrBandHz: [17000, 23000],
+    startOffsetSamples: [0, 4800],
+  },
 };
+
+/**
+ * Realistic phone transducer magnitude response:
+ *   - low end: 2nd-order Butterworth HPF, −3 dB at 350 Hz (+12 dB/oct below);
+ *   - top end: |H| = 1/√(1+(f/15700)^18) — smooth knee, ≈54 dB/oct asymptote.
+ * Analytic attenuations: 10 kHz ≈ 0.0 dB · 19 kHz ≈ 15 dB · 20 kHz ≈ 19 dB ·
+ * 22.5 kHz ≈ 28 dB. No cliff: slope 20→22.5 kHz ≈ 54 dB/oct.
+ */
+function phoneMagnitude(fHz: number): number {
+  if (fHz <= 0) return 0;
+  const hp = 1 / Math.sqrt(1 + Math.pow(350 / fHz, 4));
+  const lp = 1 / Math.sqrt(1 + Math.pow(fHz / 15700, 18));
+  return hp * lp;
+}
 
 /** Cache of designed FIR kernels (design is deterministic; cache is per fs). */
 const phoneFirCache = new Map<number, Float32Array>();
 
+/** Group delay of the phone band-limit FIR: (taps−1)/2 = 255 samples (5.31 ms
+ *  @48 kHz), removed by `filterAligned` so output stays sample-aligned. */
+export const PHONE_FIR_TAPS = 511;
+
 function phoneBandLimitFir(fs: number): Float32Array {
   let h = phoneFirCache.get(fs);
   if (!h) {
-    // 1601 taps: transition ≈ 5.5·fs/1601 ≈ 165 Hz @48k — steep enough that a
-    // 21.3 kHz cutoff is ≥30 dB down by 22.5 kHz, and 200 Hz HPF bites by ~100 Hz.
-    h = designBandpassFir(1601, 200, 21300, fs);
+    h = designFirFromMagnitude(phoneMagnitude, PHONE_FIR_TAPS, fs);
     phoneFirCache.set(fs, h);
   }
   return h;
+}
+
+/** Anti-image/anti-alias lowpass for the 2× oversampled nonlinearity stage. */
+const nlLpCache = new Map<number, Float32Array>();
+
+function nlLowpass(fs2: number): Float32Array {
+  let h = nlLpCache.get(fs2);
+  if (!h) {
+    // Cutoff just under the ORIGINAL Nyquist (fs2/4·~0.98) so products above
+    // it are removed before decimation.
+    h = designLowpassFir(191, 0.49 * (fs2 / 2), fs2);
+    nlLpCache.set(fs2, h);
+  }
+  return h;
+}
+
+/**
+ * Memoryless polynomial distortion applied at 2× rate:
+ *   upsample (zero-stuff + LP, gain 2) → y = x + a2 x² − a3 x³ → LP → decimate.
+ * The final LP removes products above the original Nyquist — physically this
+ * is the mic's anti-aliasing; without it, a 30 kHz 3rd harmonic of 10 kHz
+ * would fold to a fake 18 kHz tone.
+ */
+function softSaturate(x: Float32Array, a2: number, a3: number, fs: number): Float32Array {
+  const fs2 = fs * 2;
+  const lp = nlLowpass(fs2);
+  const up = new Float32Array(x.length * 2);
+  for (let i = 0; i < x.length; i++) up[2 * i] = x[i]!;
+  let y = filterAligned(up, lp);
+  for (let i = 0; i < y.length; i++) {
+    const v = y[i]! * 2; // ×2 restores amplitude lost to zero-stuffing
+    y[i] = v + a2 * v * v - a3 * v * v * v;
+  }
+  y = filterAligned(y, lp);
+  const out = new Float32Array(x.length);
+  for (let i = 0; i < x.length; i++) out[i] = y[2 * i]!;
+  return out;
 }
 
 export function simulateChannel(samples: Float32Array, opts: ChannelOpts): Float32Array {
@@ -98,12 +190,20 @@ export function simulateChannel(samples: Float32Array, opts: ChannelOpts): Float
     }
   }
 
-  // 2) Speaker/mic band-limit (linear-phase FIR, group delay removed).
+  // 2) Speaker nonlinearity — memoryless polynomial at 2× oversampling.
+  //    Defaults model a phone speaker at moderate drive (~1% THD @ 0.5 FS).
+  if (opts.nonlinearity) {
+    const a2 = opts.nonlinearity.secondOrder ?? 0.05;
+    const a3 = opts.nonlinearity.thirdOrder ?? 0.1;
+    x = softSaturate(x, a2, a3, fs);
+  }
+
+  // 3) Speaker/mic band-limit (linear-phase FIR, group delay removed).
   if (opts.bandLimit && opts.bandLimit.speakerModel === 'phone') {
     x = filterAligned(x, phoneBandLimitFir(fs));
   }
 
-  // 3) Room multipath — full convolution truncated to input length
+  // 4) Room multipath — full convolution truncated to input length
   //    (direct path at index 0 keeps alignment).
   if (opts.rir !== undefined) {
     const h =
@@ -113,12 +213,12 @@ export function simulateChannel(samples: Float32Array, opts: ChannelOpts): Float
     x = fftConvolve(x, h).slice(0, x.length);
   }
 
-  // 4) Clock drift — evaluate waveform at t·(1+ε).
+  // 5) Clock drift — evaluate waveform at t·(1+ε).
   if (opts.clockDriftPpm !== undefined && opts.clockDriftPpm !== 0) {
     x = resampleFractional(x, 1 + opts.clockDriftPpm * 1e-6);
   }
 
-  // 5) Receiver AGC wander — slow multiplicative gain ±15% at ~0.4 Hz.
+  // 6) Receiver AGC wander — slow multiplicative gain ±15% at ~0.4 Hz.
   if (opts.agcWander) {
     const phase = rng() * 2 * Math.PI;
     const w = (2 * Math.PI * 0.4) / fs;
@@ -127,9 +227,14 @@ export function simulateChannel(samples: Float32Array, opts: ChannelOpts): Float
     }
   }
 
-  // 6) AWGN at target in-band SNR.
+  // 7) AWGN at target in-band SNR. The band is REQUIRED: a full-band default
+  //    silently over-delivers SNR to narrowband modes (quiet mode got +6 dB).
   if (opts.snrDb !== undefined) {
-    const [lo, hi] = opts.snrBandHz ?? [0, fs / 2];
+    assert(
+      opts.snrBandHz,
+      'ChannelOpts.snrBandHz is required with snrDb — use activeBandHz(cfg)',
+    );
+    const [lo, hi] = opts.snrBandHz;
     // In-band signal power (linear, Welch estimate).
     const pSigDb = bandPowerDb(x, fs, Math.max(1, lo), Math.min(hi, fs / 2 - 1));
     const pSig = Math.pow(10, pSigDb / 10);
@@ -158,7 +263,7 @@ export function simulateChannel(samples: Float32Array, opts: ChannelOpts): Float
     }
   }
 
-  // 7) Random start offset — silence prepended (receiver never knows when TX began).
+  // 8) Random start offset — silence prepended (receiver never knows when TX began).
   if (opts.startOffsetSamples) {
     const [min, max] = opts.startOffsetSamples;
     assert(min <= max && min >= 0, 'startOffsetSamples range invalid');

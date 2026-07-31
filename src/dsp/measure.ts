@@ -75,8 +75,15 @@ export function measureSnrDb(
  * High-precision single-tone frequency estimate: Hann-windowed FFT over the
  * largest power-of-two prefix, then 3-point parabolic interpolation on
  * log-magnitude around the peak bin. Error ≪ 0.05 bin for a clean tone.
+ * Optional [loHz, hiHz] restricts the peak search (e.g. to the modem band,
+ * when out-of-band distortion products could out-power the tone).
  */
-export function estimateToneFreqHz(x: Float32Array, fs: number): number {
+export function estimateToneFreqHz(
+  x: Float32Array,
+  fs: number,
+  loHz?: number,
+  hiHz?: number,
+): number {
   let n = 1;
   while (n * 2 <= x.length) n *= 2;
   assert(n >= 1024, 'estimateToneFreqHz: need ≥ 1024 samples');
@@ -90,9 +97,11 @@ export function estimateToneFreqHz(x: Float32Array, fs: number): number {
   }
   fft.forward(re, im);
 
-  let peak = 1;
+  const kLo = Math.max(1, loHz !== undefined ? Math.ceil((loHz * n) / fs) : 1);
+  const kHi = Math.min(n / 2 - 1, hiHz !== undefined ? Math.floor((hiHz * n) / fs) : n / 2 - 1);
+  let peak = kLo;
   let peakMag = 0;
-  for (let k = 1; k < n / 2; k++) {
+  for (let k = kLo; k <= kHi; k++) {
     const m = re[k]! * re[k]! + im[k]! * im[k]!;
     if (m > peakMag) {
       peakMag = m;

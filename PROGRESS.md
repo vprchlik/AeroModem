@@ -114,3 +114,61 @@ test that scans `src/dsp`, `src/channel`, `src/util` for Web Audio/DOM reference
 `Math.random`.
 
 *Next: Phase 3 — Sync (chirp preamble).*
+
+---
+
+## Phase 2 audit — anti-optimism hardening (2026-07-31)
+
+Five audit questions answered with measurements; three real problems found and fixed.
+
+**1. SNR band definition (PROBLEM — fixed).** Old behavior: `snrDb` defaulted to a
+full-band (0–24 kHz) definition. Measured: quiet-mode signal (17–23 kHz), 10 dB
+requested → **15.97 dB delivered in-band** (+6.0 dB optimistic, = 10·log10(24/6)).
+Fix: `snrBandHz` is now **required** whenever `snrDb` is set (assertion), taken from
+the modem band via `activeBandHz(cfg)`. After fix: 10 dB requested → **9.97 dB
+measured in-band**.
+
+**2. Speaker roll-off (PROBLEM — fixed).** Old brick-wall FIR measured 131.7 dB at
+22.5 kHz. Replaced with `designFirFromMagnitude` transducer model (2nd-order
+Butterworth HPF −3 dB @ 350 Hz; smooth |H| = 1/√(1+(f/15.7 kHz)^18) top end).
+Measured response (dB attenuation): 0.5 k: 1.05 · 1 k: 0.07 · 5 k: 0.00 · 10 k: 0.00 ·
+15 k: 1.59 · 17 k: 7.15 · 19 k: 15.05 · 20 k: 18.97 · 21 k: 22.76 · **22.5 k: 28.13** ·
+23 k: 29.85. Slope 20→22.5 kHz: **53.9 dB/oct** (spec 40–60, no cliff). Group delay
+(511−1)/2 = **255 samples = 5.31 ms**, removed by `filterAligned` slice — output
+sample-aligned with input. Tests now assert 22.5 kHz ∈ [25, 35] dB and slope ∈ [40, 60]
+dB/oct. Note: 19–20 kHz is now 15–19 dB down — the top of fast mode is genuinely hard,
+as on real phones.
+
+**3. Reverb tails (verified — no change needed).** Schroeder-fit RT60 vs spec and
+ISI energy past the 512-sample (10.67 ms) CP:
+
+| Preset | RT60 measured | RT60 spec | τ_rms | Energy beyond CP |
+|---|---|---|---|---|
+| small-room | 248 ms | 250 ms | 10.8 ms | 11.2% |
+| living-room | 439 ms | 450 ms | 23.8 ms | 23.9% |
+| hallway | 677 ms | 700 ms | 43.1 ms | **40.7%** |
+
+All three presets exceed the CP in delay spread terms (τ_rms ≥ CP for all; hallway
+puts 40.7% of RIR energy past the CP) — ISI genuinely occurs in every reverberant test.
+
+**4. Nonlinearity (PROBLEM — was clamp-only; fixed).** Old: hard clamp only; a tone
+below threshold passed with zero distortion. Added `nonlinearity` impairment:
+y = x + a2·x² − a3·x³ (defaults a2 = 0.05, a3 = 0.1) applied at **2× oversampling**
+with anti-alias filtering, so products above Nyquist are removed the way a mic's
+anti-alias filter removes them — no fake folded tones. Measured, 10 kHz at 0.5 FS:
+2nd harmonic at 20 kHz = **−37.9 dBc** (≈1.3% HD2, plausible for a driven phone
+speaker); residual at 18 kHz (where the 30 kHz 3rd harmonic would alias) =
+**−145 dBc** (30 kHz is above Nyquist and correctly removed). Audible-band noise
+(8.5–11.5 kHz) leaks **+91.6 dB** into the 17–23 kHz quiet band vs the linear path.
+Digital hard clip stays at 1× rate deliberately: clipping done in the digital TX
+chain aliases in reality too.
+
+**5. Worst-case difficulty guard (added).** New preset `worst-case-quiet` (clip −6 dBFS,
+nonlinearity, phone speaker, hallway RIR, +50 ppm, AGC wander, 0 dB in-band SNR) and a
+regression test: 19 kHz sine → tone-to-adjacent-noise ratio collapses **105.2 → 9.1 dB**;
+drift measured **19000.950 Hz** (expected 19000.95); spurious energy at 17–18.5 kHz up
+**+77 dB**; the unrestricted global spectral peak is a clip-alias intermod at
+**9000.5 Hz**, not the transmitted tone. Any future change that cleans this channel
+fails the test.
+
+**Tests: 95/95 green** (10 new audit assertions).

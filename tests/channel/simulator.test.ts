@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { simulateChannel, type ChannelOpts } from '../../src/channel/simulator';
+import {
+  CHANNEL_PRESETS,
+  simulateChannel,
+  type ChannelOpts,
+} from '../../src/channel/simulator';
 import { designBandpassFir, filterAligned } from '../../src/dsp/filters';
 import {
   bandPowerDb,
@@ -51,24 +55,41 @@ describe('AWGN impairment', () => {
 });
 
 describe('band-limit impairment (phone speaker model)', () => {
-  it('attenuates 22.5 kHz by ≥ 30 dB while passing 10 kHz within 1 dB', () => {
-    const opts: ChannelOpts = {
-      seed: 1,
-      sampleRate: FS,
-      bandLimit: { speakerModel: 'phone' },
-    };
-    const x10 = tone(10000, 32768);
-    const x225 = tone(22500, 32768);
-    const y10 = simulateChannel(x10, opts);
-    const y225 = simulateChannel(x225, opts);
+  const opts: ChannelOpts = {
+    seed: 1,
+    sampleRate: FS,
+    bandLimit: { speakerModel: 'phone' },
+  };
 
-    const atten10 =
-      bandPowerDb(x10, FS, 9800, 10200) - bandPowerDb(y10, FS, 9800, 10200);
-    const atten225 =
-      bandPowerDb(x225, FS, 22300, 22700) - bandPowerDb(y225, FS, 22300, 22700);
+  function attenAt(freq: number): number {
+    const x = tone(freq, 32768);
+    const y = simulateChannel(x, opts);
+    return (
+      bandPowerDb(x, FS, freq - 200, freq + 200) -
+      bandPowerDb(y, FS, freq - 200, freq + 200)
+    );
+  }
 
-    expect(Math.abs(atten10)).toBeLessThan(1);
-    expect(atten225).toBeGreaterThan(30);
+  it('passes 10 kHz within 1 dB', () => {
+    expect(Math.abs(attenAt(10000))).toBeLessThan(1);
+  });
+
+  it('attenuates 22.5 kHz by a REALISTIC 25–35 dB (not a brick wall)', () => {
+    const a = attenAt(22500);
+    expect(a).toBeGreaterThan(25);
+    expect(a).toBeLessThan(35);
+  });
+
+  it('rolls off smoothly at −40…−60 dB/octave (no cliff)', () => {
+    const a20 = attenAt(20000);
+    const a225 = attenAt(22500);
+    const octaves = Math.log2(22500 / 20000);
+    const slope = (a225 - a20) / octaves;
+    expect(slope).toBeGreaterThan(40);
+    expect(slope).toBeLessThan(60);
+    // Monotone increase through the roll-off region.
+    expect(attenAt(19000)).toBeLessThan(a20);
+    expect(a20).toBeLessThan(a225);
   });
 
   it("'flat' model is a passthrough", () => {
@@ -157,6 +178,101 @@ describe('RIR impairment', () => {
     // y[n] = x[n] + 0.5 x[n−1024]
     const i = 5000;
     expect(y[i]!).toBeCloseTo(x[i]! + 0.5 * x[i - 1024]!, 4);
+  });
+});
+
+describe('nonlinearity impairment', () => {
+  it('a 10 kHz tone at 0.5 FS grows a 2nd harmonic at 20 kHz in −50…−25 dBc', () => {
+    const x = tone(10000, 65536, 0.5);
+    const y = simulateChannel(x, { seed: 1, sampleRate: FS, nonlinearity: {} });
+    const fund = bandPowerDb(y, FS, 9800, 10200);
+    const h2 = bandPowerDb(y, FS, 19800, 20200);
+    const rel = h2 - fund;
+    expect(rel).toBeGreaterThan(-50);
+    expect(rel).toBeLessThan(-25);
+  });
+
+  it('the 30 kHz 3rd harmonic does NOT alias to 18 kHz (oversampled + filtered)', () => {
+    const x = tone(10000, 65536, 0.5);
+    const y = simulateChannel(x, { seed: 1, sampleRate: FS, nonlinearity: {} });
+    const fund = bandPowerDb(y, FS, 9800, 10200);
+    const alias = bandPowerDb(y, FS, 17800, 18200);
+    expect(alias - fund).toBeLessThan(-55);
+  });
+
+  it('audible-band signal leaks energy into the 17–23 kHz quiet band', () => {
+    // 8.5–11.5 kHz noise: its 2nd harmonics span 17–23 kHz exactly.
+    const rng = splitmix32(31);
+    const n = 2 ** 17;
+    const white = new Float32Array(n);
+    for (let i = 0; i < n; i += 2) {
+      const [g1, g2] = gaussianPair(rng);
+      white[i] = 0.3 * g1;
+      if (i + 1 < n) white[i + 1] = 0.3 * g2;
+    }
+    const audible = filterAligned(white, designBandpassFir(401, 8500, 11500, FS));
+    const withNl = simulateChannel(audible, { seed: 2, sampleRate: FS, nonlinearity: {} });
+    const withoutNl = simulateChannel(audible, { seed: 2, sampleRate: FS });
+    const leak =
+      bandPowerDb(withNl, FS, 17000, 23000) - bandPowerDb(withoutNl, FS, 17000, 23000);
+    expect(leak).toBeGreaterThan(10);
+  });
+});
+
+describe('SNR band is in-band by definition', () => {
+  it('rejects snrDb without snrBandHz', () => {
+    const x = tone(19000, 8192);
+    expect(() => simulateChannel(x, { seed: 1, sampleRate: FS, snrDb: 10 })).toThrow(
+      /snrBandHz is required/,
+    );
+  });
+
+  it('delivers the requested SNR in the quiet band (17–23 kHz), not full-band', () => {
+    const quiet = filterAligned(
+      bandNoise(7, 2 ** 17),
+      designBandpassFir(401, 17000, 23000, FS),
+    );
+    const noisy = simulateChannel(quiet, {
+      seed: 1,
+      sampleRate: FS,
+      snrDb: 10,
+      snrBandHz: [17000, 23000],
+    });
+    const measured = measureSnrDb(quiet, noisy, FS, 17000, 23000);
+    expect(Math.abs(measured - 10)).toBeLessThan(0.5);
+  });
+});
+
+describe('worst-case difficulty guard', () => {
+  // Everything bad at once: clip, nonlinearity, phone speaker, hallway reverb,
+  // +50 ppm drift, AGC wander, 0 dB in-band SNR. If a future change makes this
+  // channel clean, these assertions fail and flag the regression.
+  it('a 19 kHz sine is measurably degraded but still detectable', () => {
+    const x = tone(19000, 2 ** 18, 0.9);
+    const y = simulateChannel(x, {
+      seed: 42,
+      sampleRate: FS,
+      ...CHANNEL_PRESETS['worst-case-quiet']!,
+    });
+
+    // (a) Clock drift shifted the tone: 19000·(1+50e-6) = 19000.95 Hz.
+    // Search restricted to 17–21 kHz: the channel is nasty enough that a
+    // clip-alias intermod near 10 kHz out-powers the attenuated fundamental —
+    // itself evidence the channel is not optimistic.
+    const f = estimateToneFreqHz(y, FS, 17000, 21000);
+    expect(Math.abs(f - 19000.95)).toBeLessThan(0.5);
+    expect(Math.abs(f - 19000)).toBeGreaterThan(0.5);
+
+    // (b) Tone-to-adjacent-noise ratio collapsed vs the clean signal.
+    const tnr = (sig: Float32Array) =>
+      bandPowerDb(sig, FS, 18800, 19200) - bandPowerDb(sig, FS, 19600, 20400);
+    expect(tnr(x)).toBeGreaterThan(60); // clean reference: near-silent neighbours
+    expect(tnr(y)).toBeLessThan(25); // degraded: strong in-band noise
+
+    // (c) Spurious energy appeared where the clean tone had none.
+    const spurious =
+      bandPowerDb(y, FS, 17000, 18500) - bandPowerDb(x, FS, 17000, 18500);
+    expect(spurious).toBeGreaterThan(30);
   });
 });
 

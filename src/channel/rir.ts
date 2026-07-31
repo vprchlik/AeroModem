@@ -107,6 +107,55 @@ export function makeRir(preset: string, seed: number, sampleRate: number): Float
   return h;
 }
 
+/**
+ * Measured RT60 via Schroeder backward integration.
+ * EDC(n) = 10·log10( Σ_{m≥n} h²[m] / Σ h² ). A straight-line fit over the
+ * EDC range [−10, −25] dB (inside the exponential tail, away from the direct
+ * tap and the truncation cliff) gives the decay rate; RT60 = time to −60 dB.
+ */
+export function rirRt60Ms(h: Float32Array, sampleRate: number): number {
+  const n = h.length;
+  const edc = new Float64Array(n);
+  let acc = 0;
+  for (let i = n - 1; i >= 0; i--) {
+    acc += h[i]! * h[i]!;
+    edc[i] = acc;
+  }
+  const total = edc[0]!;
+  // Collect (time, dB) points inside the fit window.
+  let sx = 0;
+  let sy = 0;
+  let sxx = 0;
+  let sxy = 0;
+  let count = 0;
+  for (let i = 0; i < n; i++) {
+    const db = 10 * Math.log10(edc[i]! / total);
+    if (db <= -10 && db >= -25) {
+      const t = i / sampleRate;
+      sx += t;
+      sy += db;
+      sxx += t * t;
+      sxy += t * db;
+      count++;
+    }
+  }
+  assert(count > 10, 'rirRt60Ms: not enough EDC points in fit window');
+  const slope = (count * sxy - sx * sy) / (count * sxx - sx * sx); // dB per second
+  return (-60 / slope) * 1000;
+}
+
+/** Fraction of total RIR energy arriving later than `cpSamples` (ISI energy). */
+export function energyBeyondCp(h: Float32Array, cpSamples: number): number {
+  let total = 0;
+  let late = 0;
+  for (let i = 0; i < h.length; i++) {
+    const p = h[i]! * h[i]!;
+    total += p;
+    if (i >= cpSamples) late += p;
+  }
+  return late / total;
+}
+
 /** Statistics of an impulse response, for tests and the bench. */
 export function rirStats(
   h: Float32Array,

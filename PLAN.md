@@ -406,15 +406,21 @@ real phones, so every later feature is proven in software first.
 // channel/simulator.ts
 export interface ChannelOpts {
   seed: number;                       // drives ALL randomness below
-  bandLimit?: { speakerModel: 'phone' | 'flat' };  // steep roll-off > ~21 kHz + HPF < ~200 Hz
-  snrDb?: number;                     // AWGN measured against in-band signal power
+  sampleRate: number;
+  clip?: { thresholdDbfs: number };   // digital hard clip (aliases are physical here)
+  nonlinearity?: { secondOrder?: number; thirdOrder?: number }; // speaker soft-sat @2× oversampling
+  bandLimit?: { speakerModel: 'phone' | 'flat' };  // REALISTIC transducer roll-off (see audit):
+                                      // smooth ~54 dB/oct knee at 15.7 kHz, ≈28 dB down @ 22.5 kHz,
+                                      // 2nd-order HPF at 350 Hz. NOT a brick wall.
   rir?: 'small-room' | 'living-room' | 'hallway' | Float32Array; // multipath convolution
   clockDriftPpm?: number;             // resample by (1 + ppm*1e-6)
+  agcWander?: boolean;                // slow gain wander, models a browser ignoring constraints
+  snrDb?: number;                     // AWGN — IN-BAND by definition
+  snrBandHz?: [number, number];       // REQUIRED with snrDb; use activeBandHz(cfg)
   startOffsetSamples?: [min, max];    // random silence prepended
-  clip?: { thresholdDbfs: number };   // hard/soft clipping nonlinearity
-  agcRefusal?: boolean;               // slow gain wander, models a browser ignoring constraints
 }
 export function simulateChannel(samples: Float32Array, opts: ChannelOpts): Float32Array;
+export function activeBandHz(cfg: ModemConfig): [number, number];
 
 // channel/rir.ts — synthetic RIRs: direct path + N discrete early reflections with
 // image-source-like delays + exponentially decaying noise tail at given RT60 & DRR.
@@ -443,9 +449,26 @@ clean. Determinism: same seed ⇒ bit-identical output.
 **Accept:** all impairment tests pass with the numeric tolerances above; `PROGRESS.md`
 records measured-vs-target tables.
 
-**Status:** ✅ Done (2026-07-31). AWGN worst |error| 0.074 dB across {0,10,20,30} dB × 10
-seeds; 22.5 kHz attenuation 131.7 dB with 10 kHz at 0.000 dB; DRR exact per preset;
-drift +50 ppm → 10000.5009 Hz. Full tables in `PROGRESS.md`. 85/85 tests green.
+**Status:** ✅ Done (2026-07-31), then **hardened by an anti-optimism audit** (same day):
+
+1. **SNR is now in-band by definition** — `snrBandHz` is required with `snrDb`
+   (the old full-band default silently gave quiet mode +6 dB: 15.97 dB delivered
+   when 10 dB was requested). Quiet-band request now delivers 9.97 dB.
+2. **Realistic speaker model** — brick-wall FIR (131.7 dB @ 22.5 kHz) replaced with
+   a smooth transducer response: 28.1 dB @ 22.5 kHz, 54 dB/oct roll-off, 15 dB down
+   already at 19 kHz, 2nd-order HPF at 350 Hz. Group delay 255 samples (5.31 ms),
+   compensated by `filterAligned`.
+3. **Reverb vs CP** — measured RT60 248/439/677 ms (specs 250/450/700); energy beyond
+   the 512-sample CP: 11.2% / 23.9% / 40.7% — all presets produce real ISI.
+4. **Nonlinearity added** — polynomial soft-saturation at 2× oversampling:
+   10 kHz @ 0.5 FS → 2nd harmonic −37.9 dBc at 20 kHz; no fake 18 kHz alias
+   (−145 dBc); audible-band noise leaks +91.6 dB into the 17–23 kHz quiet band.
+5. **Worst-case difficulty guard test** — 19 kHz sine through clip + nonlinearity +
+   phone speaker + hallway + 50 ppm + AGC + 0 dB SNR: tone-to-noise collapses
+   105 → 9.1 dB, drift measured exactly (19000.950 Hz), and the global spectral
+   peak is a clip-alias intermod at 9 kHz, not the tone.
+
+95/95 tests green. Full tables in `PROGRESS.md`.
 
 ---
 

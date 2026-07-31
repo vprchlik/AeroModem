@@ -108,3 +108,43 @@ export function filterAligned(x: Float32Array, h: Float32Array): Float32Array {
   const delay = (h.length - 1) >> 1;
   return full.slice(delay, delay + x.length);
 }
+
+/**
+ * Frequency-sampling FIR design from an arbitrary magnitude response.
+ *
+ * `magAt(fHz)` returns desired |H(f)| (linear, ≥ 0). The kernel is built by
+ * inverse-FFT of a zero-phase magnitude grid (N = 4096 points), centering the
+ * symmetric impulse response, and applying a Hann window of length `taps`.
+ * Result is linear-phase with group delay (taps−1)/2 samples.
+ *
+ * Works well for SMOOTH targets (e.g. transducer roll-offs); do not use for
+ * brick-wall specs.
+ */
+export function designFirFromMagnitude(
+  magAt: (fHz: number) => number,
+  taps: number,
+  fs: number,
+): Float32Array {
+  assert(taps % 2 === 1, 'FIR taps must be odd');
+  const N = 4096;
+  assert(taps < N, 'taps must be < design grid size');
+  const fft = new FFT(N);
+  const re = new Float32Array(N);
+  const im = new Float32Array(N);
+  for (let k = 0; k <= N / 2; k++) {
+    const m = Math.max(0, magAt((k * fs) / N));
+    re[k] = m;
+    if (k > 0 && k < N / 2) re[N - k] = m; // Hermitian symmetry (real kernel)
+  }
+  fft.inverse(re, im);
+  // Zero-phase kernel is centered at n=0 (wrapping negatively); rotate so the
+  // center lands at (taps−1)/2, then Hann-window to length `taps`.
+  const h = new Float32Array(taps);
+  const M = (taps - 1) >> 1;
+  for (let n = 0; n < taps; n++) {
+    const src = (n - M + N) % N;
+    const w = 0.5 - 0.5 * Math.cos((2 * Math.PI * n) / (taps - 1));
+    h[n] = re[src]! * w;
+  }
+  return h;
+}
