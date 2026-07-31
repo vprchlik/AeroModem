@@ -30,7 +30,7 @@ export interface MicConstraintsStatus {
 export interface AudioIO {
   readonly actualSampleRate: number;
   readonly micStatus: MicConstraintsStatus;
-  /** Queue mono samples for playback (copied into the worklet ring). */
+  /** Queue mono samples for playback. */
   play(samples: Float32Array): Promise<void>;
   /** Register a listener for capture batches (typically fftSize samples). */
   onCapture(cb: (chunk: Float32Array) => void): void;
@@ -99,7 +99,11 @@ export async function createAudio(cfg: ModemConfig): Promise<AudioIO> {
     numberOfOutputs: 1,
     outputChannelCount: [1],
   });
-  playbackNode.connect(ctx.destination);
+  // Master gain for both one-shot buffer playback and the streaming worklet.
+  const masterGain = ctx.createGain();
+  masterGain.gain.value = 1;
+  masterGain.connect(ctx.destination);
+  playbackNode.connect(masterGain);
 
   const captureNode = new AudioWorkletNode(ctx, 'aeromodem-capture', {
     numberOfInputs: 1,
@@ -127,9 +131,20 @@ export async function createAudio(cfg: ModemConfig): Promise<AudioIO> {
     micStatus,
     async play(samples: Float32Array) {
       if (closed) return;
-      // Copy: postMessage may transfer; keep caller’s buffer intact.
+      // User-gesture / autoplay policies can leave the context suspended.
+      if (ctx.state === 'suspended') {
+        await ctx.resume();
+      }
+
+      // One-shot path via AudioBufferSourceNode — reliable for tone bursts.
+      // Continuous streaming (Phase 6) uses the playback worklet ring instead.
       const copy = samples.slice();
-      playbackNode.port.postMessage({ type: 'samples', samples: copy }, [copy.buffer]);
+      const buf = ctx.createBuffer(1, copy.length, ctx.sampleRate);
+      buf.copyToChannel(copy, 0);
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      src.connect(masterGain);
+      src.start();
     },
     onCapture(cb: (chunk: Float32Array) => void) {
       captureCb = cb;
@@ -143,6 +158,7 @@ export async function createAudio(cfg: ModemConfig): Promise<AudioIO> {
         source.disconnect();
         captureNode.disconnect();
         playbackNode.disconnect();
+        masterGain.disconnect();
       } catch {
         /* already disconnected */
       }

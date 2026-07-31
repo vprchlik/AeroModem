@@ -169,12 +169,33 @@ async function startAudio(state: AppState): Promise<void> {
   }
 }
 
+let toneStatusTimer: ReturnType<typeof setTimeout> | null = null;
+
 function playTone(state: AppState): void {
   if (!state.audio) return;
   const hz = state.toneHz;
-  const samples = generateTone(hz, 1.5, state.audio.actualSampleRate, 0.35);
+  const durationSec = 1.5;
+  // Louder for audible test tones; still leave headroom at high freq.
+  const amp = hz < 8000 ? 0.5 : 0.4;
+  const samples = generateTone(hz, durationSec, state.audio.actualSampleRate, amp);
   void state.audio.play(samples);
-  $('tone-status').textContent = `Playing ${hz.toFixed(0)} Hz for 1.5 s…`;
+
+  const tip =
+    hz >= 15000
+      ? ' (inaudible to most adults — watch the spectrogram near the TOP)'
+      : ' (you should hear this)';
+  $('tone-status').textContent = `Playing ${hz.toFixed(0)} Hz for ${durationSec} s…${tip}`;
+  if (toneStatusTimer) clearTimeout(toneStatusTimer);
+  toneStatusTimer = setTimeout(() => {
+    $('tone-status').textContent = `Done (${hz.toFixed(0)} Hz).`;
+  }, durationSec * 1000 + 100);
+}
+
+function setToneHz(state: AppState, hz: number): void {
+  state.toneHz = hz;
+  const slider = $('tone-hz') as HTMLInputElement;
+  slider.value = String(hz);
+  $('tone-hz-out').textContent = `${hz} Hz`;
 }
 
 /** Mount the app shell into `#app`. */
@@ -220,8 +241,10 @@ export function mountApp(root: HTMLElement = $('app')): AppState {
 
     <section id="panel-audio" class="panel" hidden>
       <h1>Audio check</h1>
-      <p class="stub">Start the mic in this tab, open another tab on the same page, play a
-        19 kHz tone there — you should see a bright horizontal line on this spectrogram.</p>
+      <p class="stub">1) Start mic. 2) Play a <strong>1 kHz</strong> tone — you should <em>hear</em> it
+        and see a bright line near the <em>bottom</em> of the spectrogram.
+        3) Then try <strong>19 kHz</strong> — you usually will <em>not</em> hear it; look for a
+        line near the <em>top</em> of the spectrogram (laptop speakers often can't reproduce 19 kHz).</p>
 
       <div class="audio-controls">
         <button type="button" id="btn-mic-start">Start mic</button>
@@ -233,15 +256,24 @@ export function mountApp(root: HTMLElement = $('app')): AppState {
 
       <pre id="audio-status" class="status">Mic idle.</pre>
 
-      <canvas id="spectrogram" width="640" height="280" aria-label="Live spectrogram"></canvas>
-      <div class="freq-axis" aria-hidden="true">
-        <span>0</span><span>6 kHz</span><span>12 kHz</span><span>18 kHz</span><span>24 kHz</span>
+      <div class="spec-wrap">
+        <div class="freq-axis-y" aria-hidden="true">
+          <span>24 kHz</span><span>18</span><span>12</span><span>6</span><span>0</span>
+        </div>
+        <canvas id="spectrogram" width="640" height="280" aria-label="Live spectrogram"></canvas>
+      </div>
+      <p class="freq-axis-caption">Frequency ↑ top of plot · time → scrolls left to right</p>
+
+      <div class="tone-presets">
+        <button type="button" data-tone="1000">1 kHz (hear me)</button>
+        <button type="button" data-tone="5000">5 kHz</button>
+        <button type="button" data-tone="19000">19 kHz (spectrogram)</button>
       </div>
 
       <div class="tone-controls">
         <label>Tone
-          <input type="range" id="tone-hz" min="100" max="23000" step="50" value="19000" />
-          <output id="tone-hz-out" for="tone-hz">19000 Hz</output>
+          <input type="range" id="tone-hz" min="100" max="23000" step="50" value="1000" />
+          <output id="tone-hz-out" for="tone-hz">1000 Hz</output>
         </label>
         <button type="button" id="btn-tone" disabled>Play tone</button>
         <span id="tone-status" class="stub"></span>
@@ -256,7 +288,7 @@ export function mountApp(root: HTMLElement = $('app')): AppState {
     mode: 'fast',
     config: FAST_48K,
     audio: null,
-    toneHz: 19000,
+    toneHz: 1000,
   };
 
   $('btn-send').addEventListener('click', () => setRole(state, 'send'));
@@ -271,6 +303,13 @@ export function mountApp(root: HTMLElement = $('app')): AppState {
   $('btn-mic-start').addEventListener('click', () => void startAudio(state));
   $('btn-mic-stop').addEventListener('click', () => void stopAudio(state));
   $('btn-tone').addEventListener('click', () => playTone(state));
+
+  root.querySelectorAll<HTMLButtonElement>('[data-tone]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      setToneHz(state, Number(btn.dataset.tone));
+      if (state.audio) playTone(state);
+    });
+  });
 
   const slider = $('tone-hz') as HTMLInputElement;
   const out = $('tone-hz-out');

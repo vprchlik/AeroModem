@@ -70,8 +70,11 @@ Paste results into this section when done (browser, OS, rawOk yes/no, two-tab vi
 |---|---|
 | Browser / OS | |
 | Sample rate reported | |
-| rawOk (all three flags false) | |
-| Same-tab 19 kHz line visible | |
-| Two-tab 19 kHz line visible | |
+| rawOk (all three flags false) | **yes** (Victor laptop, 2026-07-31 — screenshot) |
+| Same-tab 1 kHz audible + line | _(retest after playback fix)_ |
+| Same-tab 19 kHz line visible | _(retest — look near TOP of spectrogram; speakers may not reproduce)_ |
+| Notes | Initial 19 kHz test: no audible tone (expected); status text stuck (fixed); playback hardened to AudioBufferSourceNode |
+
+**Follow-up fix (same phase):** tone status now clears after 1.5 s; `play()` resumes a suspended AudioContext and uses `AudioBufferSourceNode` for one-shots; UI defaults to 1 kHz with preset buttons; frequency axis labeled on the Y side (top = 24 kHz).
 
 *Next: Phase 2 — Channel simulator.*

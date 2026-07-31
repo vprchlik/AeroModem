@@ -209,14 +209,50 @@ body {
   background: #080e12;
 }
 
-.freq-axis {
+.spec-wrap {
   display: flex;
+  align-items: stretch;
+  gap: 0.4rem;
+  max-width: 680px;
+}
+
+.freq-axis-y {
+  display: flex;
+  flex-direction: column;
   justify-content: space-between;
-  max-width: 640px;
   font-family: var(--font-mono);
-  font-size: 0.7rem;
+  font-size: 0.65rem;
   color: var(--muted);
-  margin: 0.25rem 0 0.75rem;
+  padding: 0.15rem 0;
+  min-width: 2.6rem;
+  text-align: right;
+}
+
+.freq-axis-caption {
+  color: var(--muted);
+  font-size: 0.75rem;
+  margin: 0.3rem 0 0.75rem;
+}
+
+.tone-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.tone-presets button {
+  font: inherit;
+  cursor: pointer;
+  border: 1px solid var(--accent-dim);
+  background: transparent;
+  color: var(--ink);
+  padding: 0.45rem 0.8rem;
+  font-size: 0.9rem;
+}
+
+.tone-presets button:hover {
+  border-color: var(--accent);
 }
 
 .tone-controls label {
