@@ -351,3 +351,100 @@ pinned by a regression test). No maximum-duration limit was reached.
 **Tests: 123/123 green.**
 
 *Next: Phase 5 — Framing + LT fountain code.*
+
+---
+
+## Phase 5 — Framing + LT fountain code (2026-07-31)
+
+**Delivered:** CRC-16/32, rate-1/2 K=7 conv + soft Viterbi, mandatory bit
+interleaver (across subcarriers **and** OFDM symbols), BPSK header region with
+3× repetition (independent of payload mod), frame geometry helpers, LT encoder/
+decoder (peeling + GF(2) GE fallback), `FileSender` / `FileReceiver`, per-symbol
+modulation schedule on the OFDM modem. Carry-over: `'off-axis'` RIR preset.
+
+### Off-axis observation preset (not an acceptance target)
+
+| Preset | Spec DRR | Measured DRR | τ_rms |
+|---|---|---|---|
+| off-axis | −3 dB | **−3.00 dB** | 33.4 ms |
+
+Dominant-early-reflection failure mode now exists in the simulator. Sync/modem
+thresholds were **not** retuned against it.
+
+### Frame geometry (whole OFDM symbols)
+
+FAST_48K (683 data carriers), header always BPSK + rate-1/2 + 3× rep:
+
+| Payload mod | Hdr sym | Pay sym | Total | Bytes/frame | Frames/burst (32 sym) |
+|---|---|---|---|---|---|
+| BPSK | 2 | 7 | 9 | 256 | 3 |
+| QPSK | 2 | 4 | **6** | 256 | **5** |
+| 16-QAM | 2 | 2 | 4 | 256 | 8 |
+
+QUIET_48K (228 carriers, QPSK): 6 + 10 = **16** symbols/frame, 2 frames/burst.
+
+### Interleave A/B (same channel)
+
+small-room @ 12 dB in-band, phone speaker, 30 ppm drift, AGC, 40 frames:
+
+| Interleaving | Frame success |
+|---|---|
+| **ON** | **33/40 (82.5%)** |
+| OFF | **0/40 (0.0%)** |
+
+(Living-room @ 20 dB is ISI-limited — both ON and OFF near zero — so the A/B
+uses small-room where Group-8 / frequency-selective fades dominate without the
+reverb floor.)
+
+### Header vs payload failure @ Phase 4 operating SNR (20 dB, QPSK payload)
+
+30 single-frame trials each (phone + RIR + 30 ppm + nonlinearity):
+
+| Preset | OK | Hdr fail | Pay fail |
+|---|---|---|---|
+| small-room | **29/30** | 1 | 0 |
+| living-room | 0/30 | **0** | **30** |
+| hallway | 0/30 | **0** | **30** |
+
+BPSK+repetition headers survive on every room; QPSK payloads die on living-room/
+hallway (ISI floor from energy beyond CP — Phase 4 caveat confirmed post-FEC).
+
+### LT overhead ε (c = 0.05, δ = 0.05; ≥200 seeded runs)
+
+Justification: Luby mid-range — modest average degree, δ=0.05 theoretical
+peeling-failure target; GE fallback covers residual stalls. For small K,
+`R = c·ln(K/δ)·√K` is clamped to ≥1 (robust spike weak).
+
+K = fileSize / 256-byte blocks:
+
+| K | File | Success | Mean ε | P95 ε | Worst ε |
+|---|---|---|---|---|---|
+| 4 | 1 KiB | 200/200 | **0.585** | 1.75 | 3.25 |
+| 40 | 10 KiB | 200/200 | **0.070** | 0.225 | 0.275 |
+| 391 | ≈100 kB | 200/200 | **0.008** | 0.018 | 0.026 |
+
+**Small-K tradeoff:** mean ε at K=4 is **58% ≫ 15%** target. Not tuned away —
+short transfers pay fountain overhead; K≥40 meets the 15% mean bar with margin
+(K=391 mean 0.8%).
+
+### Acceptance
+
+- **100 kB @ 20% random frame loss:** reconstructed (SHA-256 match) in 97 bursts;
+  empirical loss 19.0%; 393 packets accepted.
+- **Full pipeline @ Phase 4 20 dB operating point** (phone + RIR + drift + AGC +
+  nonlinearity), 10 kB file (K=40):
+
+| Preset | Result | Bursts | Goodput | Hdr fail | Pay fail | OK frames |
+|---|---|---|---|---|---|---|
+| small-room | ✅ SHA match | 9 | **4669 bit/s** | 0 | 1 | 44 |
+| living-room | ✅ SHA match | 243 | **173 bit/s** | 5 | 1166 | 44 |
+| hallway | ❌ ISI floor | 20 (probe) | — | 0 | 100 | **0** |
+
+Living-room closes only because the fountain absorbs ~96% frame loss (headers
+still decode). Hallway yields zero QPSK payload successes even at 30 dB — Phase 7
+must drop/BPSK the dead carriers / handle the 41% beyond-CP energy. Off-axis was
+not used for acceptance.
+
+**Tests: 153/153 green.**
+
+*Next: Phase 6 — End-to-end product.*

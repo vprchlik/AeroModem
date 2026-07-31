@@ -16,7 +16,7 @@ Status legend: ⬜ not started · 🟨 in progress · ✅ done.
 | 2 | Channel simulator | ✅ |
 | 3 | Sync (chirp preamble) | ✅ |
 | 4 | OFDM modem core | ✅ |
-| 5 | Framing + LT fountain code | 🟨 |
+| 5 | Framing + LT fountain code | ✅ |
 | 6 | End-to-end product | ⬜ |
 | 7 | Adaptation (bit-loading) | ⬜ |
 | 8 | Benchmark & writeup | ⬜ |
@@ -751,7 +751,9 @@ K under test = fileSize / 256 B blocks: **K = 4 (1 KiB), 40 (10 KiB), 391 (≈10
 exception documented); full-pipeline reconstructs at Phase 4 operating points;
 PROGRESS.md logs all measured numbers.
 
-**Status:** 🟨 in progress.
+**Status:** ✅ Done (2026-07-31). See `PROGRESS.md` for measured ε, interleave A/B,
+header/payload rates, and pipeline goodput. Hallway remains ISI-blocked for QPSK
+payloads (headers still decode) — Phase 7 bit-loading.
 
 ---
 
