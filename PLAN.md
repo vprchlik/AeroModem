@@ -12,7 +12,7 @@ Status legend: ⬜ not started · 🟨 in progress · ✅ done.
 | Phase | Name | Status |
 |---|---|---|
 | 0 | Scaffold | ✅ |
-| 1 | Audio plumbing + visualizer | ⬜ |
+| 1 | Audio plumbing + visualizer | ✅ |
 | 2 | Channel simulator | ⬜ |
 | 3 | Sync (chirp preamble) | ⬜ |
 | 4 | OFDM modem core | ⬜ |
@@ -383,6 +383,10 @@ unit tests (wrap-around, under/overflow accounting).
 **Accept (manual, documented in PROGRESS.md):** on a laptop, a generated 19 kHz tone
 played from one browser tab is clearly visible in a second tab's spectrogram; mic track
 settings show all three processing flags false.
+
+**Status:** ✅ Done (2026-07-31). Automated: 40/40 tests green (FFT vs DFT max err &lt; 1e-4,
+Hann coherent gain ≈ 0.5, ring wrap/overflow, 19 kHz tone peak bin). Manual laptop
+protocol recorded in `PROGRESS.md` Phase 1 — **requires a human run**.
 
 ---
 
