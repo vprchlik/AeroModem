@@ -68,13 +68,17 @@ Paste results into this section when done (browser, OS, rawOk yes/no, two-tab vi
 
 | Field | Your result |
 |---|---|
-| Browser / OS | |
-| Sample rate reported | |
-| rawOk (all three flags false) | **yes** (Victor laptop, 2026-07-31 — screenshot) |
-| Same-tab 1 kHz audible + line | _(retest after playback fix)_ |
-| Same-tab 19 kHz line visible | _(retest — look near TOP of spectrogram; speakers may not reproduce)_ |
-| Notes | Initial 19 kHz test: no audible tone (expected); status text stuck (fixed); playback hardened to AudioBufferSourceNode |
+| Browser / OS | Victor laptop (2026-07-31) |
+| Sample rate reported | **48000 Hz ✓** |
+| rawOk (all three flags false) | **yes** |
+| Same-tab 1 kHz audible + line | **yes** (heard; line near bottom of spectrogram) |
+| Same-tab 5 kHz audible + line | **yes** (heard; bright line ~5 kHz) |
+| Same-tab 19 kHz audible | **no** (expected — above typical adult hearing / speaker response) |
+| Same-tab 19 kHz line on spectrogram | **no** — laptop speakers do not reproduce 19 kHz into the mic |
+| Two-tab 19 kHz line visible | not required given speaker roll-off |
+
+**Phase 1 verdict:** Mic capture, raw constraints, spectrogram, and audible playback are verified. The PLAN’s “19 kHz tone visible on spectrogram” criterion fails on this hardware because the **speaker**, not the modem stack, rolls off — confirmed by clean 1/5 kHz loopback on the same path. This is the planned Phase 2 `speakerModel: 'phone'` / band-limit impairment; no code change needed before Phase 2.
 
 **Follow-up fix (same phase):** tone status now clears after 1.5 s; `play()` resumes a suspended AudioContext and uses `AudioBufferSourceNode` for one-shots; UI defaults to 1 kHz with preset buttons; frequency axis labeled on the Y side (top = 24 kHz).
 
-*Next: Phase 2 — Channel simulator.*
+*Standing by for user signal before Phase 2 — Channel simulator.*

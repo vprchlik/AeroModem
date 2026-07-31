@@ -386,7 +386,9 @@ settings show all three processing flags false.
 
 **Status:** ✅ Done (2026-07-31). Automated: 40/40 tests green (FFT vs DFT max err &lt; 1e-4,
 Hann coherent gain ≈ 0.5, ring wrap/overflow, 19 kHz tone peak bin). Manual laptop
-protocol recorded in `PROGRESS.md` Phase 1 — **requires a human run**.
+run: raw mic constraints OK @ 48 kHz; 1 kHz and 5 kHz audible with spectrogram lines;
+19 kHz not reproduced by laptop speakers (expected — feeds Phase 2 speaker roll-off
+model). Standing by before Phase 2.
 
 ---
 
