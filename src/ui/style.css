@@ -284,3 +284,73 @@ body {
     flex: 1;
   }
 }
+
+/* ------------------------------------------------------------- Phase 6 --- */
+
+.clip {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 0.4rem;
+}
+
+.clip.ok { color: #41d97e; }
+.clip.warn { color: #e8b93e; }
+.clip.bad {
+  color: #fff;
+  background: #b3261e;
+  animation: clip-pulse 0.8s infinite alternate;
+}
+
+@keyframes clip-pulse {
+  from { opacity: 1; }
+  to { opacity: 0.55; }
+}
+
+.diag-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.8rem;
+  margin-top: 1rem;
+}
+
+.diag-grid figure {
+  margin: 0;
+}
+
+.diag-grid canvas {
+  width: 100%;
+  height: auto;
+  border-radius: 0.4rem;
+  background: #10141c;
+}
+
+.diag-grid figcaption {
+  color: var(--muted);
+  font-size: 0.8rem;
+  margin-top: 0.25rem;
+}
+
+@media (min-width: 700px) {
+  .diag-grid {
+    grid-template-columns: 2fr 1fr;
+  }
+}
+
+.file-label {
+  display: block;
+  margin: 0.6rem 0;
+  color: var(--muted);
+}
+
+#send-volume {
+  accent-color: var(--accent);
+  width: 12rem;
+}
+
+#rx-download {
+  display: inline-block;
+  margin-top: 0.5rem;
+  color: var(--accent);
+  font-weight: 600;
+}

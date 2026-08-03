@@ -65,6 +65,79 @@ function buildTable(): Float32Array {
 
 let TABLE: Float32Array | null = null;
 
+/**
+ * Streaming fractional resampler with phase continuity across chunks.
+ * out[n] = x(n·ratio) in the input's sample coordinates. Used for live
+ * device-rate ↔ modem-rate conversion (e.g. 44.1 kHz mic → 48 kHz modem):
+ * a rate mismatch otherwise presents as constant unexplained drift.
+ */
+export class StreamResampler {
+  private readonly ratio: number;
+  /** Rolling history: last TAPS input samples (for kernel overlap). */
+  private hist = new Float32Array(TAPS);
+  private histLen = 0;
+  /** Absolute input index of hist[histLen-1] + 1 == total samples consumed. */
+  private inCount = 0;
+  /** Next output position in input coordinates. */
+  private outPos = 0;
+
+  constructor(ratio: number) {
+    assert(ratio > 0.5 && ratio < 2, `resample ratio ${ratio} outside sane range`);
+    if (!TABLE) TABLE = buildTable();
+    this.ratio = ratio;
+  }
+
+  /** Resample one chunk; returns output samples (possibly empty). */
+  push(chunk: Float32Array): Float32Array {
+    const table = TABLE!;
+    const half = TAPS / 2;
+    // Assemble hist + chunk into one working buffer.
+    const work = new Float32Array(this.histLen + chunk.length);
+    work.set(this.hist.subarray(0, this.histLen));
+    work.set(chunk, this.histLen);
+    // Absolute input index of work[0]:
+    const workBase = this.inCount - this.histLen;
+
+    // We can emit out[n] at input position t = n·ratio while the kernel
+    // window [i-(half-1), i+half] fits inside work (i = floor(t)).
+    const maxI = workBase + work.length - 1 - half; // largest usable floor(t)
+    const out: number[] = [];
+    while (Math.floor(this.outPos) <= maxI) {
+      const t = this.outPos;
+      const i = Math.floor(t);
+      const frac = t - i;
+      const iw = i - workBase;
+      const start = iw - (half - 1);
+      if (start < 0) {
+        // Not enough left-history yet (start-up); emit zero-padded estimate.
+        this.outPos += this.ratio;
+        out.push(0);
+        continue;
+      }
+      const pf = frac * PHASES;
+      const p0 = Math.floor(pf);
+      const pw = pf - p0;
+      const base0 = p0 * TAPS;
+      const base1 = (p0 + 1) * TAPS;
+      let acc = 0;
+      for (let j = 0; j < TAPS; j++) {
+        const c = table[base0 + j]! * (1 - pw) + table[base1 + j]! * pw;
+        acc += c * work[start + j]!;
+      }
+      out.push(acc);
+      this.outPos += this.ratio;
+    }
+
+    // Keep the last TAPS samples as history.
+    const keep = Math.min(TAPS, work.length);
+    this.hist.set(work.subarray(work.length - keep));
+    this.histLen = keep;
+    this.inCount += chunk.length;
+
+    return Float32Array.from(out);
+  }
+}
+
 export function resampleFractional(x: Float32Array, ratio: number): Float32Array {
   assert(ratio > 0.5 && ratio < 2, `resample ratio ${ratio} outside sane drift range`);
   if (!TABLE) TABLE = buildTable();

@@ -27,11 +27,25 @@ export interface MicConstraintsStatus {
   channelCount: number | undefined;
 }
 
+export interface PlaybackRingStats {
+  length: number;
+  overflow: number;
+  underflow: number;
+}
+
 export interface AudioIO {
   readonly actualSampleRate: number;
   readonly micStatus: MicConstraintsStatus;
-  /** Queue mono samples for playback. */
+  /** Queue mono samples for one-shot playback (tones). */
   play(samples: Float32Array): Promise<void>;
+  /** Queue mono samples into the continuous streaming ring (bursts). */
+  stream(samples: Float32Array): void;
+  /** Clear the streaming ring (stop transmission). */
+  clearStream(): void;
+  /** Query the streaming ring fill level. */
+  ringStats(): Promise<PlaybackRingStats>;
+  /** Master output gain 0…1 (TX volume slider). */
+  setGain(v: number): void;
   /** Register a listener for capture batches (typically fftSize samples). */
   onCapture(cb: (chunk: Float32Array) => void): void;
   /** Stop capture/playback and release the mic. */
@@ -63,7 +77,18 @@ function readMicStatus(track: MediaStreamTrack): MicConstraintsStatus {
   };
 }
 
-export async function createAudio(cfg: ModemConfig): Promise<AudioIO> {
+export interface CreateAudioOptions {
+  /** Skip getUserMedia (send-only role — no mic permission prompt). */
+  captureEnabled?: boolean;
+}
+
+export async function createAudio(
+  cfg: ModemConfig,
+  opts: CreateAudioOptions = {},
+): Promise<AudioIO> {
+  // Request the modem rate; browsers that can't honor it (common on iOS,
+  // which often runs 44.1 kHz) return their hardware rate in ctx.sampleRate.
+  // The link layer resamples at the boundary — but the UI must SHOW the rate.
   const ctx = new AudioContext({ sampleRate: cfg.sampleRate, latencyHint: 'interactive' });
 
   // Resume may be required after a user gesture.
@@ -71,20 +96,31 @@ export async function createAudio(cfg: ModemConfig): Promise<AudioIO> {
     await ctx.resume();
   }
 
-  const stream = await navigator.mediaDevices.getUserMedia({
-    audio: {
-      ...RAW_CONSTRAINTS,
-      sampleRate: cfg.sampleRate,
-    },
-    video: false,
-  });
-
-  const track = stream.getAudioTracks()[0];
-  if (!track) {
-    await ctx.close();
-    throw new Error('No audio track returned by getUserMedia');
+  const captureEnabled = opts.captureEnabled !== false;
+  let stream: MediaStream | null = null;
+  let micStatus: MicConstraintsStatus = {
+    echoCancellation: undefined,
+    noiseSuppression: undefined,
+    autoGainControl: undefined,
+    rawOk: false,
+    channelCount: undefined,
+  };
+  if (captureEnabled) {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        ...RAW_CONSTRAINTS,
+        sampleRate: cfg.sampleRate,
+      },
+      video: false,
+    });
+    const track = stream.getAudioTracks()[0];
+    if (!track) {
+      await ctx.close();
+      throw new Error('No audio track returned by getUserMedia');
+    }
+    // VERIFY, don't just request: read back what the browser actually applied.
+    micStatus = readMicStatus(track);
   }
-  const micStatus = readMicStatus(track);
 
   const playbackUrl = workletFromSource(playbackWorkletSource);
   const captureUrl = workletFromSource(captureWorkletSource);
@@ -98,6 +134,7 @@ export async function createAudio(cfg: ModemConfig): Promise<AudioIO> {
     numberOfInputs: 0,
     numberOfOutputs: 1,
     outputChannelCount: [1],
+    processorOptions: { ringCapacity: Math.round(ctx.sampleRate * 5) },
   });
   // Master gain for both one-shot buffer playback and the streaming worklet.
   const masterGain = ctx.createGain();
@@ -105,20 +142,39 @@ export async function createAudio(cfg: ModemConfig): Promise<AudioIO> {
   masterGain.connect(ctx.destination);
   playbackNode.connect(masterGain);
 
-  const captureNode = new AudioWorkletNode(ctx, 'aeromodem-capture', {
-    numberOfInputs: 1,
-    numberOfOutputs: 0,
-    processorOptions: { batchSize: cfg.fftSize },
-  });
-
-  const source = ctx.createMediaStreamSource(stream);
-  source.connect(captureNode);
-
+  let captureNode: AudioWorkletNode | null = null;
+  let source: MediaStreamAudioSourceNode | null = null;
   let captureCb: ((chunk: Float32Array) => void) | null = null;
-  captureNode.port.onmessage = (ev: MessageEvent) => {
-    const msg = ev.data as { type: string; samples?: Float32Array };
-    if (msg.type === 'capture' && msg.samples && captureCb) {
-      captureCb(msg.samples);
+  if (stream) {
+    captureNode = new AudioWorkletNode(ctx, 'aeromodem-capture', {
+      numberOfInputs: 1,
+      numberOfOutputs: 0,
+      processorOptions: { batchSize: cfg.fftSize },
+    });
+    source = ctx.createMediaStreamSource(stream);
+    source.connect(captureNode);
+    captureNode.port.onmessage = (ev: MessageEvent) => {
+      const msg = ev.data as { type: string; samples?: Float32Array };
+      if (msg.type === 'capture' && msg.samples && captureCb) {
+        captureCb(msg.samples);
+      }
+    };
+  }
+
+  // Streaming-ring stats round trip.
+  let statsResolve: ((s: PlaybackRingStats) => void) | null = null;
+  const prevPlaybackHandler = playbackNode.port.onmessage;
+  playbackNode.port.onmessage = (ev: MessageEvent) => {
+    const msg = ev.data as { type: string; length?: number; overflow?: number; underflow?: number };
+    if (msg.type === 'stats' && statsResolve) {
+      statsResolve({
+        length: msg.length ?? 0,
+        overflow: msg.overflow ?? 0,
+        underflow: msg.underflow ?? 0,
+      });
+      statsResolve = null;
+    } else if (prevPlaybackHandler) {
+      prevPlaybackHandler.call(playbackNode.port, ev);
     }
   };
 
@@ -146,6 +202,30 @@ export async function createAudio(cfg: ModemConfig): Promise<AudioIO> {
       src.connect(masterGain);
       src.start();
     },
+    stream(samples: Float32Array) {
+      if (closed) return;
+      if (ctx.state === 'suspended') void ctx.resume();
+      playbackNode.port.postMessage({ type: 'samples', samples: samples.slice() });
+    },
+    clearStream() {
+      playbackNode.port.postMessage({ type: 'clear' });
+    },
+    ringStats(): Promise<PlaybackRingStats> {
+      return new Promise((resolve) => {
+        statsResolve = resolve;
+        playbackNode.port.postMessage({ type: 'stats' });
+        // Guard against a dead worklet: resolve empty after 250 ms.
+        setTimeout(() => {
+          if (statsResolve === resolve) {
+            statsResolve = null;
+            resolve({ length: 0, overflow: 0, underflow: 0 });
+          }
+        }, 250);
+      });
+    },
+    setGain(v: number) {
+      masterGain.gain.value = Math.max(0, Math.min(1, v));
+    },
     onCapture(cb: (chunk: Float32Array) => void) {
       captureCb = cb;
     },
@@ -155,14 +235,14 @@ export async function createAudio(cfg: ModemConfig): Promise<AudioIO> {
       captureCb = null;
       playbackNode.port.postMessage({ type: 'stop' });
       try {
-        source.disconnect();
-        captureNode.disconnect();
+        source?.disconnect();
+        captureNode?.disconnect();
         playbackNode.disconnect();
         masterGain.disconnect();
       } catch {
         /* already disconnected */
       }
-      for (const t of stream.getTracks()) t.stop();
+      if (stream) for (const t of stream.getTracks()) t.stop();
       URL.revokeObjectURL(playbackUrl);
       URL.revokeObjectURL(captureUrl);
       await ctx.close();

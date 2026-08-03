@@ -17,7 +17,7 @@ Status legend: ⬜ not started · 🟨 in progress · ✅ done.
 | 3 | Sync (chirp preamble) | ✅ |
 | 4 | OFDM modem core | ✅ |
 | 5 | Framing + LT fountain code | ✅ |
-| 6 | End-to-end product | ⬜ |
+| 6 | End-to-end product | 🟨 code+sim done; hardware run pending |
 | 7 | Adaptation (bit-loading) | ⬜ |
 | 8 | Benchmark & writeup | ⬜ |
 
@@ -760,42 +760,53 @@ payloads (headers still decode) — Phase 7 bit-loading.
 ### Phase 6 — End-to-end product
 
 **Goal:** the actual send/receive UI, wired to real audio, plus `TESTING.md`.
+Real-hardware requirements are first-class: actual-sample-rate handling,
+verified (not just requested) raw audio, iOS gesture/wake-lock constraints,
+TX level control with an RX clipping indicator.
 
-**Files:** `src/ui/app.ts` (finalized), `src/ui/snrBars.ts`, `src/ui/constellation.ts`,
-`src/ui/blockGrid.ts`, `src/ui/progress.ts`, `src/link` glue to `src/audio`,
-`TESTING.md`.
+**Files:** `src/link/stream.ts` (StreamingSender/StreamingReceiver — pure,
+Node-tested), `src/dsp/resample.ts` (`StreamResampler`, phase-continuous),
+`src/ui/app.ts` (finalized), `src/ui/snrBars.ts`, `src/ui/constellation.ts`,
+`src/ui/blockGrid.ts`, `src/ui/wakeLock.ts`, `src/audio/context.ts` (streaming
+ring + gain + capture-optional), `TESTING.md`. Pre-Phase-6 carry-over:
+`ROBUST_48K` preset (BPSK payloads for reverberant rooms).
 
-**Send flow:** pick file (≤ 1 MB enforced), pick mode (fast/quiet) → `FileSender`
-produces burst bits → `OfdmModulator` → playback worklet loops forever until stopped;
-UI: live TX spectrogram, packets-sent counter, estimated time for ε = 10%.
+**Sample-rate policy (do not assume 48 kHz):** `AudioContext.sampleRate` is
+read back after creation (44.1 kHz is common, especially iOS). The modem always
+runs at `cfg.sampleRate`; the link layer fractionally resamples TX 48k→device
+and RX device→48k with a phase-continuous streaming resampler. Sender and
+receiver at DIFFERENT device rates is a tested case (44.1↔48 both directions).
+The active device rate + modem rate are displayed on both ends — an unhandled
+mismatch would present as constant unexplained "drift" (~81000 ppm for
+44.1↔48, ~1700× the tracker's range).
 
-**Receive flow:** tap to listen (mic permission with raw constraints; refusal of the
-constraints surfaced as a warning) → capture worklet → `OfdmDemodulator` →
-`FileReceiver`; UI: live spectrogram, per-subcarrier SNR bars, constellation plot,
-torrent-style block grid, frames-ok/frames-dropped counters; on completion: SHA-256
-computed via WebCrypto, displayed with ✓, automatic download via object URL.
+**Raw audio is verified, not requested:** after `getUserMedia`, the UI reads
+`track.getSettings()` and shows the actual echoCancellation / noiseSuppression /
+autoGainControl values, with a warning (not a silent failure) when the platform
+refused.
 
-Demodulation runs off the audio thread (main thread or a Web Worker if profiling shows
-> 30% of a 53 ms symbol budget; the DSP-purity rule makes moving it trivial).
+**iOS:** AudioContext created strictly inside click handlers; screen wake lock
+(`navigator.wakeLock`) held during transfers with visibility-change re-acquire;
+Safari testing is a mandatory row in TESTING.md's device matrix.
 
-**Tests:** UI logic tests where they pay off (state machine send/receive/idle, file-size
-cap, hash display); the full DSP path is already covered by Phase 5 e2e tests. A
-`tests/link/e2e-quiet.test.ts` runs the quiet-mode preset through the phone band-limit
-simulator preset (speaker roll-off at 21 kHz active) to prove quiet mode closes the link
-before hardware is touched.
+**TX level:** volume slider on the sender (master GainNode); the receiver
+shows a live clipping indicator (fraction of |x| ≥ 0.985 over the last second)
+plus a recent-peak readout — the Phase 2 nonlinearity model predicts harmonic
+distortion at high drive, and this is the user-visible knob/meter pair to fix it.
 
-**`TESTING.md` protocol:** device matrix (Android Chrome / iPhone Safari), placement
-(0.5 m and arm's length, on a table), volume calibration step (play calibration tone,
-adjust to ~80% volume), quiet room vs. background-noise cases, what to record per run
-(file size, mode, time, retries, failure symptoms), and the rule: any hardware failure
-gets reproduced in the simulator as a new `ChannelOpts` case + regression test before
-being fixed.
+**Diagnostics live during real transfers:** spectrogram, per-subcarrier SNR
+bars (from each burst's channel estimate), equalized constellation, block grid,
+frames ok/header-fail/payload-fail counters, corrected drift ppm.
 
-**Accept:** manual protocol in `TESTING.md` executed and logged in PROGRESS.md: a 20 kB
-file transfers phone-to-phone in **quiet mode at arm's length**. (Cloud-agent caveat: I
-cannot perform the physical two-phone test myself; the protocol, all simulator gates, and
-a laptop tab-to-tab loopback are delivered, with the phone table in PROGRESS.md left for
-a human run to fill in.)
+**Tests:** `tests/dsp/streamResample.test.ts` (streaming = whole-buffer
+resampler, tone frequency preserved across rates); `tests/link/stream.test.ts`
+(chunked-capture e2e; cross-rate 44.1↔48 both directions; clipping indicator;
+quiet-mode-through-phone-speaker verdict; robust preset streaming e2e).
+
+**Accept:** TESTING.md matrix filled from at least one real phone-to-phone
+session with at least one mode achieving reliable 20 kB transfers at arm's
+length. (Cloud-agent caveat: the physical two-phone run needs a human; all
+simulator gates + the protocol + the app are delivered, table left to fill.)
 
 ---
 

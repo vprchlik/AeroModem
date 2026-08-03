@@ -126,6 +126,13 @@ export class LtDecoder {
     return this.seen.size;
   }
 
+  /** 0/1 per source block — drives the UI block grid. */
+  blockBitmap(): Uint8Array {
+    const map = new Uint8Array(this.K);
+    for (let i = 0; i < this.K; i++) map[i] = this.resolved[i] ? 1 : 0;
+    return map;
+  }
+
   addPacket(packetSeed: number, payload: Uint8Array): void {
     if (this.complete) return;
     if (this.seen.has(packetSeed)) return;

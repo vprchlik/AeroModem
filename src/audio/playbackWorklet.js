@@ -60,10 +60,13 @@ class FloatRingInline {
 }
 
 class PlaybackProcessor extends AudioWorkletProcessor {
-  constructor() {
+  constructor(options) {
     super();
-    // ~2 s at 48 kHz — enough to absorb main-thread jitter for tone bursts.
-    this.ring = new FloatRingInline(96000);
+    // Default ~2 s at 48 kHz; Phase 6 streaming passes ~5 s so two whole
+    // bursts fit and main-thread jitter can't underrun between feeds.
+    const capacity =
+      (options && options.processorOptions && options.processorOptions.ringCapacity) || 96000;
+    this.ring = new FloatRingInline(capacity);
     this.playing = true;
     this.port.onmessage = (ev) => {
       const msg = ev.data;

@@ -127,4 +127,9 @@ export class FileReceiver {
   result(): Uint8Array | null {
     return this.decoder?.result() ?? null;
   }
+
+  /** 0/1 per source block (empty until the session header is seen). */
+  blockBitmap(): Uint8Array {
+    return this.decoder?.blockBitmap() ?? new Uint8Array(0);
+  }
 }

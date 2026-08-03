@@ -448,3 +448,94 @@ not used for acceptance.
 **Tests: 153/153 green.**
 
 *Next: Phase 6 — End-to-end product.*
+
+---
+
+## Pre-Phase-6: ROBUST preset (2026-08-03)
+
+Living-room QPSK payloads at 0/30 meant no usable default for ordinary
+reverberant rooms (173 bit/s of fountain brute force is not a product).
+Added `ROBUST_48K`: BPSK payloads, same BPSK×3 headers, same interleaving —
+one preset, not adaptation. Geometry: 2+7 = 9 symbols/frame, 3 frames/burst.
+
+**Measured (25 bursts each, phone speaker + 30 ppm + AGC + nonlinearity):**
+
+| Preset | Channel | SNR | Frame success | Net throughput |
+|---|---|---|---|---|
+| ROBUST (BPSK) | living-room | 12 dB | **16.0%** | **516 bit/s** |
+| ROBUST (BPSK) | living-room | 20 dB | **65.3%** | **2108 bit/s** |
+| ROBUST (BPSK) | hallway | 12 dB | 0.0% | 0 |
+| ROBUST (BPSK) | hallway | 20 dB | 0.0% | 0 |
+| FAST (QPSK) | living-room | 12 dB | 0.0% | 0 |
+| FAST (QPSK) | living-room | 20 dB | 0.0%* | ~173 bit/s via fountain |
+| FAST (QPSK) | hallway | 12/20 dB | 0.0% | 0 |
+
+*FAST living-room measured 4–5% over longer runs (Phase 5); 0/125 here is the
+same floor with fewer trials.
+
+End-to-end: ROBUST delivers 20 kB over living-room @ 20 dB in 40 bursts
+(76 s, **2101 bit/s**), SHA-256 verified — 12× the QPSK fountain path.
+**Hallway remains closed at any tested setting** (~10–11% raw BER exceeds
+rate-1/2 K=7 correction) — that stays a Phase 7 (bit-loading / band-drop) item,
+not papered over here.
+
+---
+
+## Phase 6 — End-to-end product (2026-08-03)
+
+**Delivered:** streaming link layer (`src/link/stream.ts`) with
+phase-continuous fractional resampling at the audio boundary
+(`StreamResampler`); real send/receive UI wired to AudioWorklets; TESTING.md
+hardware protocol. All DSP remains pure and Node-tested.
+
+### Real-hardware requirements (as implemented)
+
+1. **No 48 kHz assumption.** The modem always runs at `cfg.sampleRate`; the
+   actual `AudioContext.sampleRate` is read back and displayed on both ends.
+   TX resamples modem→device, RX resamples device→modem. **Cross-rate tests
+   pass both directions** (sender device 44.1 kHz ↔ receiver device 48 kHz),
+   proving a rate mismatch no longer presents as unexplained drift.
+2. **Raw audio verified, not requested.** `track.getSettings()` is read after
+   `getUserMedia`; the UI prints the actual EC/NS/AGC values and shows an
+   explicit warning when the platform kept processing on.
+3. **iOS constraints.** AudioContext created only inside tap handlers; screen
+   wake lock held during transfers (re-acquired on visibilitychange); Safari
+   rows are mandatory in the TESTING.md device matrix. (Safari testing itself
+   requires hardware — protocol row, not a sim result.)
+4. **TX level control.** Volume slider (master GainNode) on the sender;
+   receiver shows a clipping indicator (fraction of |x| ≥ 0.985 over 1 s,
+   verified by test: overdriven capture → >20% clip flagged, clean −10 dBFS
+   capture → 0%) plus recent-peak readout.
+5. **Diagnostics live during transfers:** spectrogram, per-subcarrier SNR bars,
+   equalized constellation, block grid, frame counters, corrected-drift ppm.
+
+### Streaming-layer measurements (Node, seeded)
+
+| Case | Result |
+|---|---|
+| 5 kB small-room @ 20 dB, random 128–2176-sample chunks | ✓ 6 bursts, SHA match |
+| Cross-rate 44.1 kHz TX device → 48 kHz RX device | ✓ 3 bursts, SHA match |
+| Cross-rate 48 kHz TX device → 44.1 kHz RX device | ✓ SHA match |
+| ROBUST 3 kB living-room @ 20 dB streaming | ✓ 16 bursts, SHA match |
+| StreamResampler vs whole-buffer reference | max err < 1e-3, tone 1000.0 Hz preserved |
+| Overdriven capture clip detection | 30%-railed input → clipFraction > 0.2 |
+
+### Quiet-mode link-budget verdict (phone speaker model, small-room)
+
+| Payload | 20 dB | 25 dB | 30 dB |
+|---|---|---|---|
+| QPSK (default) | ✗ (0 frames ok, headers fine) | ✓ closes (8 ok/16 bursts) | ✓ (5 ok/9) |
+| BPSK | ✓ closes (4 ok/21 bursts) | ✓ (9 ok/21) | ✓ (9 ok/21) |
+
+Quiet mode is viable through the modeled transducer roll-off only at
+**≥25 dB in-band (QPSK)** or **≥20 dB (BPSK payloads)** — expect it to be the
+most fragile mode on hardware; the diagnostics exist to confirm which carriers
+die. (Band truncation to 17–20.5 kHz breaks frame-per-burst fit — Phase 7.)
+
+### Acceptance status
+
+Code + simulator gates: **complete** (all tests green). The TESTING.md results
+table requires a physical phone-to-phone session that a cloud agent cannot
+perform — the matrix (3 modes × 0.3 m/1 m × 3 tries, device models, room type,
+wall-clock, effective bit/s) is ready to fill, with simulator predictions
+listed for comparison. **Phase 6 acceptance is pending that human run.**
