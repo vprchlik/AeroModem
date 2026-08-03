@@ -273,6 +273,19 @@ export const QUIET_48K: ModemConfig = {
 };
 
 /**
+ * Robust mode: FAST band but BPSK payloads (headers are always BPSK anyway),
+ * same interleaving. For ordinary reverberant rooms where the QPSK ISI margin
+ * is gone (living-room QPSK payload success ≈ 0 at any SNR — PROGRESS.md
+ * Phase 5). One fixed preset; adaptation stays in Phase 7.
+ */
+export const ROBUST_48K: ModemConfig = {
+  ...BASE_48K,
+  bandLowHz: 2000,
+  bandHighHz: 20000,
+  bitLoading: { uniform: 'bpsk' },
+};
+
+/**
  * Build a 44.1 kHz preset from a 48 kHz one: keep the same Hz band edges
  * (clamped to Nyquist), same numerology otherwise. Cross-rate TX/RX is out of
  * scope for v1 — both ends must display and match the active profile.
@@ -289,13 +302,16 @@ function to44100(src: ModemConfig): ModemConfig {
 
 export const FAST_44K1: ModemConfig = to44100(FAST_48K);
 export const QUIET_44K1: ModemConfig = to44100(QUIET_48K);
+export const ROBUST_44K1: ModemConfig = to44100(ROBUST_48K);
 
 /** Named presets for the UI mode toggle. */
 export const PRESETS = {
   'fast-48k': FAST_48K,
   'quiet-48k': QUIET_48K,
+  'robust-48k': ROBUST_48K,
   'fast-44k1': FAST_44K1,
   'quiet-44k1': QUIET_44K1,
+  'robust-44k1': ROBUST_44K1,
 } as const;
 
 export type PresetId = keyof typeof PRESETS;
