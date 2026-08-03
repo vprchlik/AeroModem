@@ -9,6 +9,8 @@ Open that URL on both phones for a hardware session. HTTPS is required for
 `getUserMedia` / `AudioContext`. See [`TESTING.md`](./TESTING.md) for the
 measurement protocol.
 
+> **One-time setup (required before the URL works):** repo **Settings → Pages → Source = GitHub Actions**, then re-run the *Deploy GitHub Pages* workflow (or push any commit to `main`). Private repos need GitHub Pro for Pages (or make the repo public). Pages always serves HTTPS.
+
 See [`PLAN.md`](./PLAN.md) for the phased build plan and [`PROGRESS.md`](./PROGRESS.md)
 for measured numbers after each phase.
 
