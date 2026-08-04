@@ -32,6 +32,7 @@ import { BlockGrid } from './blockGrid';
 import { WakeLockKeeper } from './wakeLock';
 import { StreamingSender, StreamingReceiver } from '../link/stream';
 import { frameGeometry } from '../code/geometry';
+import { CaptureRecorder } from '../audio/wav';
 
 export type Role = 'idle' | 'send' | 'receive' | 'audio';
 export type Mode = 'fast' | 'robust' | 'quiet';
@@ -52,6 +53,8 @@ export interface AppState {
   txVolume: number;
   /** Linear capture preamp (1 = unity). Raised on quiet iOS getUserMedia paths. */
   micGain: number;
+  /** Rolling recording of what the demodulator saw (kept after Stop for download). */
+  recorder: CaptureRecorder | null;
 }
 
 function $(id: string): HTMLElement {
@@ -255,8 +258,15 @@ async function startReceiving(state: AppState): Promise<void> {
       })();
     });
 
+    // Rolling capture of exactly what the demodulator sees (post mic-gain,
+    // device rate) — downloadable for offline simulator reproduction.
+    const recorder = new CaptureRecorder(audio.actualSampleRate, 120);
+    state.recorder = recorder;
+    ($('btn-rx-save-wav') as HTMLButtonElement).disabled = false;
+
     audio.onCapture((chunk) => {
       receiver.push(chunk);
+      recorder.push(chunk);
       // Spectrogram path (device-rate frames are fine for display).
       let off = 0;
       while (off < chunk.length) {
@@ -512,6 +522,11 @@ export function mountApp(root: HTMLElement = $('app')): AppState {
         <button type="button" id="btn-rx-stop" disabled>Stop</button>
         <span id="rx-clip" class="clip ok">● level</span>
       </div>
+      <div class="audio-controls">
+        <button type="button" id="btn-rx-save-wav" disabled>Save capture (WAV)</button>
+        <span class="meta">Keeps the last 2 min of mic input — attach failing runs to a bug
+          report so they can be replayed in the simulator.</span>
+      </div>
       <pre id="rx-audio-info" class="status"></pre>
       <p id="rx-status" class="stub">Idle.</p>
       <p id="rx-counters" class="stub"></p>
@@ -603,6 +618,7 @@ export function mountApp(root: HTMLElement = $('app')): AppState {
     // iOS Safari often needs ~10–30×; Chrome desktop is fine at 1× but 10×
     // still leaves headroom for loud speech before clipping — start mid.
     micGain: 10,
+    recorder: null,
   };
 
   $('btn-send').addEventListener('click', () => setRole(state, 'send'));
@@ -648,6 +664,17 @@ export function mountApp(root: HTMLElement = $('app')): AppState {
   };
   rxGain.addEventListener('input', () => syncMicGainUi(Number(rxGain.value)));
   audioGain.addEventListener('input', () => syncMicGainUi(Number(audioGain.value)));
+  $('btn-rx-save-wav').addEventListener('click', () => {
+    const rec = state.recorder;
+    if (!rec || rec.seconds < 0.1) return;
+    const wav = rec.toWav();
+    const url = URL.createObjectURL(new Blob([wav.buffer as ArrayBuffer], { type: 'audio/wav' }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `aeromodem-capture-${rec.sampleRate}hz-${Date.now()}.wav`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  });
 
   // Audio check panel.
   $('btn-mic-start').addEventListener('click', () => void startAudioCheck(state));
