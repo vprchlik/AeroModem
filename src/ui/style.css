@@ -343,7 +343,9 @@ body {
   color: var(--muted);
 }
 
-#send-volume {
+#send-volume,
+#rx-mic-gain,
+#audio-mic-gain {
   accent-color: var(--accent);
   width: 12rem;
 }

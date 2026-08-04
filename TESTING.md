@@ -31,12 +31,16 @@ character (quiet / speech / music).
      browser kept any ON, note it in the results table; expect degradation.
 4. Sender: pick the test file, **Start sending**. Watch the receiver's
    **clipping indicator**: if it shows CLIPPING, lower the TX volume slider
-   until it reads "level ok" (the Phase 2 nonlinearity model predicts harmonic
-   distortion at high drive — this is the knob that fixes it).
+   or Mic gain until it reads "level ok" (the Phase 2 nonlinearity model
+   predicts harmonic distortion at high drive — this is the knob that fixes it).
+   If peak stays under ~5% even while talking into the receiver, **raise Mic
+   gain** (Safari/iPad often needs 10–30× — the digital preamp does not replace
+   OS voice processing; it only scales the samples the browser delivered).
 5. Keep both screens on (the app requests a wake lock; if the status box says
    it's unsupported, keep the screen awake manually).
 6. iOS specifics: audio starts only after the tap (expected); if the phone
-   locks anyway, transfers stall — note it.
+   locks anyway, transfers stall — note it. The app sets `audioSession` to
+   `play-and-record` when available.
 
 ## Test file
 
