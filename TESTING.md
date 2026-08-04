@@ -34,7 +34,7 @@ character (quiet / speech / music).
    or Mic gain until it reads "level ok" (the Phase 2 nonlinearity model
    predicts harmonic distortion at high drive — this is the knob that fixes it).
    If peak stays under ~5% even while talking into the receiver, **raise Mic
-   gain** (Safari/iPad often needs 10–30× — the digital preamp does not replace
+   gain** (Safari/iPad often needs 40–100× — the digital preamp does not replace
    OS voice processing; it only scales the samples the browser delivered).
 5. Keep both screens on (the app requests a wake lock; if the status box says
    it's unsupported, keep the screen awake manually).
