@@ -512,11 +512,11 @@ export function mountApp(root: HTMLElement = $('app')): AppState {
     <section id="panel-receive" class="panel" hidden>
       <h1>Receive</h1>
       <label>Mic gain
-        <input type="range" id="rx-mic-gain" min="1" max="40" step="1" value="10" />
-        <output id="rx-mic-gain-out">10×</output>
+        <input type="range" id="rx-mic-gain" min="1" max="100" step="1" value="40" />
+        <output id="rx-mic-gain-out">40×</output>
       </label>
       <p class="footnote">If talking into the mic stays under ~5% peak, raise Mic gain until
-        speech hits ~20–50%. Safari/iPad often needs 10–30×.</p>
+        speech hits ~20–50%. Safari/iPad often needs 40–100×.</p>
       <div class="audio-controls">
         <button type="button" id="btn-rx-start">Tap to listen</button>
         <button type="button" id="btn-rx-stop" disabled>Stop</button>
@@ -570,8 +570,8 @@ export function mountApp(root: HTMLElement = $('app')): AppState {
         </label>
       </div>
       <label>Mic gain
-        <input type="range" id="audio-mic-gain" min="1" max="40" step="1" value="10" />
-        <output id="audio-mic-gain-out">10×</output>
+        <input type="range" id="audio-mic-gain" min="1" max="100" step="1" value="40" />
+        <output id="audio-mic-gain-out">40×</output>
       </label>
 
       <pre id="audio-status" class="status">Mic idle.</pre>
@@ -615,9 +615,9 @@ export function mountApp(root: HTMLElement = $('app')): AppState {
     receiver: null,
     wakeLock: new WakeLockKeeper(),
     txVolume: 0.8,
-    // iOS Safari often needs ~10–30×; Chrome desktop is fine at 1× but 10×
-    // still leaves headroom for loud speech before clipping — start mid.
-    micGain: 10,
+    // iOS Safari often needs ~40–100× to get speech into the 20–50% peak band;
+    // Chrome desktop should lower this if speech clips at the default.
+    micGain: 40,
     recorder: null,
   };
 
