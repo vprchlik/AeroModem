@@ -10,7 +10,9 @@
  *    (44.1 kHz devices are common — a silent mismatch looks like huge drift).
  *  - Mic processing flags are VERIFIED via track.getSettings() and surfaced.
  *  - Screen wake lock is held during transfers where supported.
- *  - TX has a volume slider; RX has a live clipping indicator.
+ *  - TX has a volume slider; RX has a mic-gain slider + live clipping indicator.
+ *    Safari/iOS often delivers ~1% FS peaks even while talking — raise mic gain
+ *    until speech hits ~20–50% peak before judging the acoustic link.
  */
 
 import {
@@ -48,6 +50,8 @@ export interface AppState {
   receiver: StreamingReceiver | null;
   wakeLock: WakeLockKeeper;
   txVolume: number;
+  /** Linear capture preamp (1 = unity). Raised on quiet iOS getUserMedia paths. */
+  micGain: number;
 }
 
 function $(id: string): HTMLElement {
@@ -201,6 +205,7 @@ async function startReceiving(state: AppState): Promise<void> {
   try {
     const audio = await createAudio(state.config, { captureEnabled: true });
     state.audio = audio;
+    audio.setCaptureGain(state.micGain);
     const wl = await state.wakeLock.acquire();
 
     const receiver = new StreamingReceiver(state.config, {
@@ -210,6 +215,11 @@ async function startReceiving(state: AppState): Promise<void> {
 
     const lines = describeAudio(audio, state.config, true);
     lines.push(wl ? 'Screen wake lock held ✓' : '⚠ No wake lock — keep the screen on manually.');
+    if (!audio.micStatus.rawOk) {
+      lines.push(
+        `Mic gain ${state.micGain.toFixed(0)}× — if talking stays under ~5% peak, raise Mic gain.`,
+      );
+    }
     $('rx-audio-info').textContent = lines.join('\n');
     $('rx-audio-info').classList.toggle('warn', !audio.micStatus.rawOk);
 
@@ -269,13 +279,17 @@ async function startReceiving(state: AppState): Promise<void> {
       const clipEl = $('rx-clip');
       const pct = (100 * d.clipFraction).toFixed(1);
       if (d.clipFraction > 0.001) {
-        clipEl.textContent = `● CLIPPING ${pct}% — lower the sender volume`;
+        clipEl.textContent = `● CLIPPING ${pct}% — lower Mic gain or sender volume`;
         clipEl.className = 'clip bad';
-      } else if (d.recentPeak > 0.8) {
-        clipEl.textContent = `● hot (peak ${(100 * d.recentPeak).toFixed(0)}%)`;
+      } else if (d.recentPeak > 0.5) {
+        clipEl.textContent = `● hot (peak ${(100 * d.recentPeak).toFixed(1)}%)`;
+        clipEl.className = 'clip warn';
+      } else if (d.recentPeak < 0.05) {
+        clipEl.textContent =
+          `● too quiet (peak ${(100 * d.recentPeak).toFixed(1)}%) — raise Mic gain`;
         clipEl.className = 'clip warn';
       } else {
-        clipEl.textContent = `● level ok (peak ${(100 * d.recentPeak).toFixed(0)}%)`;
+        clipEl.textContent = `● level ok (peak ${(100 * d.recentPeak).toFixed(1)}%)`;
         clipEl.className = 'clip ok';
       }
       $('rx-counters').textContent =
@@ -339,6 +353,7 @@ async function startAudioCheck(state: AppState): Promise<void> {
   try {
     const audio = await createAudio(state.config);
     state.audio = audio;
+    audio.setCaptureGain(state.micGain);
     const lines = describeAudio(audio, state.config, true);
     $('audio-status').textContent = lines.join('\n');
     $('audio-status').classList.toggle('warn', !audio.micStatus.rawOk);
@@ -486,6 +501,12 @@ export function mountApp(root: HTMLElement = $('app')): AppState {
 
     <section id="panel-receive" class="panel" hidden>
       <h1>Receive</h1>
+      <label>Mic gain
+        <input type="range" id="rx-mic-gain" min="1" max="40" step="1" value="10" />
+        <output id="rx-mic-gain-out">10×</output>
+      </label>
+      <p class="footnote">If talking into the mic stays under ~5% peak, raise Mic gain until
+        speech hits ~20–50%. Safari/iPad often needs 10–30×.</p>
       <div class="audio-controls">
         <button type="button" id="btn-rx-start">Tap to listen</button>
         <button type="button" id="btn-rx-stop" disabled>Stop</button>
@@ -533,6 +554,10 @@ export function mountApp(root: HTMLElement = $('app')): AppState {
           <meter id="mic-level" min="0" max="1" low="0.05" high="0.5" optimum="0.2" value="0"></meter>
         </label>
       </div>
+      <label>Mic gain
+        <input type="range" id="audio-mic-gain" min="1" max="40" step="1" value="10" />
+        <output id="audio-mic-gain-out">10×</output>
+      </label>
 
       <pre id="audio-status" class="status">Mic idle.</pre>
 
@@ -575,6 +600,9 @@ export function mountApp(root: HTMLElement = $('app')): AppState {
     receiver: null,
     wakeLock: new WakeLockKeeper(),
     txVolume: 0.8,
+    // iOS Safari often needs ~10–30×; Chrome desktop is fine at 1× but 10×
+    // still leaves headroom for loud speech before clipping — start mid.
+    micGain: 10,
   };
 
   $('btn-send').addEventListener('click', () => setRole(state, 'send'));
@@ -608,6 +636,18 @@ export function mountApp(root: HTMLElement = $('app')): AppState {
   // Receive panel.
   $('btn-rx-start').addEventListener('click', () => void startReceiving(state));
   $('btn-rx-stop').addEventListener('click', () => void stopReceiving(state));
+  const rxGain = $('rx-mic-gain') as HTMLInputElement;
+  const audioGain = $('audio-mic-gain') as HTMLInputElement;
+  const syncMicGainUi = (v: number) => {
+    state.micGain = v;
+    rxGain.value = String(v);
+    audioGain.value = String(v);
+    $('rx-mic-gain-out').textContent = `${v}×`;
+    $('audio-mic-gain-out').textContent = `${v}×`;
+    state.audio?.setCaptureGain(v);
+  };
+  rxGain.addEventListener('input', () => syncMicGainUi(Number(rxGain.value)));
+  audioGain.addEventListener('input', () => syncMicGainUi(Number(audioGain.value)));
 
   // Audio check panel.
   $('btn-mic-start').addEventListener('click', () => void startAudioCheck(state));

@@ -46,6 +46,14 @@ export interface AudioIO {
   ringStats(): Promise<PlaybackRingStats>;
   /** Master output gain 0…1 (TX volume slider). */
   setGain(v: number): void;
+  /**
+   * Digital mic preamp before the capture worklet (linear gain ≥ 0).
+   * Safari/iOS often delivers ~0.01 FS peaks even for loud speech; boost until
+   * talking hits ~0.2–0.5 peak. Does not replace OS AGC — it only scales.
+   */
+  setCaptureGain(v: number): void;
+  /** Current capture gain (default 1). */
+  getCaptureGain(): number;
   /** Register a listener for capture batches (typically fftSize samples). */
   onCapture(cb: (chunk: Float32Array) => void): void;
   /** Stop capture/playback and release the mic. */
@@ -106,6 +114,19 @@ export async function createAudio(
     channelCount: undefined,
   };
   if (captureEnabled) {
+    // iOS 17+: prefer play-and-record so the session doesn't stay in a
+    // voice-call routing mode that attenuates capture/playback.
+    const audioSession = (navigator as Navigator & {
+      audioSession?: { type: string };
+    }).audioSession;
+    if (audioSession) {
+      try {
+        audioSession.type = 'play-and-record';
+      } catch {
+        /* older stubs may reject unknown types */
+      }
+    }
+
     stream = await navigator.mediaDevices.getUserMedia({
       audio: {
         ...RAW_CONSTRAINTS,
@@ -144,6 +165,8 @@ export async function createAudio(
 
   let captureNode: AudioWorkletNode | null = null;
   let source: MediaStreamAudioSourceNode | null = null;
+  let captureGain: GainNode | null = null;
+  let captureGainValue = 1;
   let captureCb: ((chunk: Float32Array) => void) | null = null;
   if (stream) {
     captureNode = new AudioWorkletNode(ctx, 'aeromodem-capture', {
@@ -152,7 +175,12 @@ export async function createAudio(
       processorOptions: { batchSize: cfg.fftSize },
     });
     source = ctx.createMediaStreamSource(stream);
-    source.connect(captureNode);
+    // Preamp between mic and worklet — identity by default; UI raises this on
+    // platforms that deliver extremely quiet getUserMedia levels (common iOS).
+    captureGain = ctx.createGain();
+    captureGain.gain.value = captureGainValue;
+    source.connect(captureGain);
+    captureGain.connect(captureNode);
     captureNode.port.onmessage = (ev: MessageEvent) => {
       const msg = ev.data as { type: string; samples?: Float32Array };
       if (msg.type === 'capture' && msg.samples && captureCb) {
@@ -226,6 +254,13 @@ export async function createAudio(
     setGain(v: number) {
       masterGain.gain.value = Math.max(0, Math.min(1, v));
     },
+    setCaptureGain(v: number) {
+      captureGainValue = Math.max(0, v);
+      if (captureGain) captureGain.gain.value = captureGainValue;
+    },
+    getCaptureGain() {
+      return captureGainValue;
+    },
     onCapture(cb: (chunk: Float32Array) => void) {
       captureCb = cb;
     },
@@ -236,6 +271,7 @@ export async function createAudio(
       playbackNode.port.postMessage({ type: 'stop' });
       try {
         source?.disconnect();
+        captureGain?.disconnect();
         captureNode?.disconnect();
         playbackNode.disconnect();
         masterGain.disconnect();
@@ -243,6 +279,18 @@ export async function createAudio(
         /* already disconnected */
       }
       if (stream) for (const t of stream.getTracks()) t.stop();
+      // Leave iOS audio session in a normal playback state after mic release.
+      const audioSession = (navigator as Navigator & {
+        audioSession?: { type: string };
+      }).audioSession;
+      if (audioSession) {
+        try {
+          audioSession.type = 'playback';
+          audioSession.type = 'auto';
+        } catch {
+          /* ignore */
+        }
+      }
       URL.revokeObjectURL(playbackUrl);
       URL.revokeObjectURL(captureUrl);
       await ctx.close();
