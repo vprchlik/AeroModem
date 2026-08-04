@@ -2,16 +2,29 @@
  * Replay a real-hardware RX capture (WAV from the app's "Save capture" button)
  * through the StreamingReceiver — the sim-first bridge for hardware failures.
  *
- * Run: npx tsx scripts/replay-wav.ts <capture.wav> [fast|robust|quiet]
+ * Run: npx tsx scripts/replay-wav.ts <capture.wav> [fast|robust|quiet] [--analyze]
  *
  * Prints the same counters the app shows (bursts, frames ok/header-fail/
- * payload-fail, packets) plus per-burst sync details, so a failing live run
- * becomes a deterministic offline reproduction.
+ * payload-fail, packets), so a failing live run becomes a deterministic
+ * offline reproduction.
+ *
+ * --analyze additionally compares TRAINING-symbol SNR against DATA-symbol EVM
+ * per frequency group. The two-training-symbol noise estimate (chanest.ts)
+ * cancels any signal-correlated distortion — both training symbols get
+ * distorted identically, so their difference hides it — while data symbols
+ * expose it. A large train-vs-data gap therefore fingerprints TX-side
+ * nonlinearity (e.g. phone speaker-protection limiters), which is invisible
+ * to the receiver's CSI weighting. Measured 2026-08-04, iPhone 15 Pro Max
+ * Safari TX at high volume: training said 17–24 dB, data EVM implied 4–11 dB,
+ * plus a brick wall above ~14.5 kHz — 0/90 frames despite green SNR bars.
  */
 
 import { readFileSync } from 'node:fs';
-import { FAST_48K, QUIET_48K, ROBUST_48K, type ModemConfig } from '../src/config';
+import { derive, FAST_48K, QUIET_48K, ROBUST_48K, type ModemConfig } from '../src/config';
 import { StreamingReceiver } from '../src/link/stream';
+import { PreambleDetector } from '../src/modem/sync';
+import { OfdmDemodulator } from '../src/modem/ofdmDemod';
+import { burstSymbolMods, frameGeometry } from '../src/code/geometry';
 
 function parseWavMono(bytes: Uint8Array): { samples: Float32Array; sampleRate: number } {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -64,9 +77,13 @@ const MODES: Record<string, ModemConfig> = {
   quiet: QUIET_48K,
 };
 
-const [, , wavPath, modeName = 'robust'] = process.argv;
+const args = process.argv.slice(2).filter((a) => a !== '--analyze');
+const analyze = process.argv.includes('--analyze');
+const [wavPath, modeName = 'robust'] = args;
 if (!wavPath) {
-  console.error('Usage: npx tsx scripts/replay-wav.ts <capture.wav> [fast|robust|quiet]');
+  console.error(
+    'Usage: npx tsx scripts/replay-wav.ts <capture.wav> [fast|robust|quiet] [--analyze]',
+  );
   process.exit(1);
 }
 const cfg = MODES[modeName];
@@ -116,3 +133,87 @@ if (d.lastSnrDb) {
   );
 }
 console.log(completed ? `✓ file completed: ${(completed as Uint8Array).length} bytes` : 'file NOT completed');
+
+// ------------------------------------------------- --analyze deep dive ---
+
+if (analyze) {
+  const dv = derive(cfg);
+  const geom = frameGeometry(cfg);
+  const symbolMods = burstSymbolMods(cfg, geom);
+  const detector = new PreambleDetector(cfg);
+  const demod = new OfdmDemodulator(cfg, { symbolMods });
+  const burstSamples =
+    cfg.chirpLengthSamples +
+    cfg.chirpGuardSamples +
+    (cfg.trainingSymbols + cfg.dataSymbolsPerBurst) * (cfg.fftSize + cfg.cpLength);
+
+  // NOTE: assumes device rate == modem rate (the common capture case). For
+  // mismatched rates run the counters replay above; the group table would need
+  // a resampling pass first.
+  if (sampleRate !== cfg.sampleRate) {
+    console.log(`\n--analyze skipped: capture is ${sampleRate} Hz but modem is ${cfg.sampleRate} Hz`);
+    process.exit(0);
+  }
+
+  const nCar = dv.dataBins.length;
+  const G = 16;
+  const per = Math.ceil(nCar / G);
+  const evmSum = new Float64Array(G);
+  const evmN = new Float64Array(G);
+  const trainSnrSum = new Float64Array(G);
+  const trainSnrN = new Float64Array(G);
+
+  let used = 0;
+  for (const det of detector.push(samples)) {
+    const start = Math.floor(det.sampleIndex);
+    if (start + burstSamples + 1024 > samples.length) break;
+    const x = samples.slice(start, start + burstSamples + 1024);
+    try {
+      const res = demod.demodBurst(x, det.sampleIndex - start + det.fracOffset);
+      for (let s = 0; s < res.eqRe.length; s++) {
+        const re = res.eqRe[s]!;
+        const im = res.eqIm[s]!;
+        if (re.length !== nCar) continue;
+        for (let i = 0; i < nCar; i++) {
+          if (res.est.snrLin[i]! <= 10) continue; // dead carriers: EVM meaningless
+          const gi = Math.min(G - 1, Math.floor(i / per));
+          // BPSK reference (±1, 0); for QPSK modes this is a coarse proxy.
+          const dr = Math.abs(re[i]!) - 1;
+          evmSum[gi] += dr * dr + im[i]! * im[i]!;
+          evmN[gi]++;
+        }
+      }
+      for (let i = 0; i < nCar; i++) {
+        const gi = Math.min(G - 1, Math.floor(i / per));
+        trainSnrSum[gi] += 10 * Math.log10(Math.max(res.est.snrLin[i]!, 1e-6));
+        trainSnrN[gi]++;
+      }
+      used++;
+    } catch {
+      /* malformed burst — skip */
+    }
+  }
+
+  console.log(`\n--analyze over ${used} bursts (good carriers = train SNR > 10 dB):`);
+  console.log('group  centerHz  trainSNRdB  dataEVM  impliedDataSNRdB');
+  for (let gi = 0; gi < G; gi++) {
+    const hz = ((dv.dataBins[Math.min(gi * per, nCar - 1)] ?? dv.binHigh) * cfg.sampleRate) / cfg.fftSize;
+    const tSnr = trainSnrN[gi]! > 0 ? (trainSnrSum[gi]! / trainSnrN[gi]!).toFixed(1) : '—';
+    if (evmN[gi]! > 0) {
+      const mse = evmSum[gi]! / evmN[gi]!;
+      console.log(
+        `${String(gi).padStart(3)}  ${(hz / 1000).toFixed(1).padStart(7)}k  ${tSnr.padStart(9)}  ` +
+          `${Math.sqrt(mse).toFixed(3).padStart(7)}  ${(10 * Math.log10(1 / mse)).toFixed(1).padStart(10)}`,
+      );
+    } else {
+      console.log(
+        `${String(gi).padStart(3)}  ${(hz / 1000).toFixed(1).padStart(7)}k  ${tSnr.padStart(9)}  (no good carriers)`,
+      );
+    }
+  }
+  console.log(
+    '\nInterpretation: trainSNR ≫ impliedDataSNR on the same carriers = signal-' +
+      'correlated TX distortion (limiter/clipping) invisible to the training-based ' +
+      'noise estimate; uniformly low trainSNR in a band = spectral kill (speaker/OS filter).',
+  );
+}

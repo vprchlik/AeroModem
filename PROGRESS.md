@@ -539,3 +539,34 @@ table requires a physical phone-to-phone session that a cloud agent cannot
 perform — the matrix (3 modes × 0.3 m/1 m × 3 tries, device models, room type,
 wall-clock, effective bit/s) is ready to fill, with simulator predictions
 listed for comparison. **Phase 6 acceptance is pending that human run.**
+
+### Hardware session findings (2026-08-04, office)
+
+First real-air results (session sheet: `TESTING-results-session-2026-08-04.csv`):
+
+| Pairing | Robust | Fast |
+|---|---|---|
+| PC Chrome tab → PC Chrome tab (headphones → AT2020) | ✓ byte-exact, 84 ok / 0 hdr-fail | ✓ byte-exact |
+| PC → iPad Pro Safari (40× mic gain) | ✓ byte-exact | — |
+| iPhone 15 Pro Max Safari → anything | ✗ 0 frames ok | — |
+
+**iPhone TX failure diagnosed from a real capture** (Save-capture WAV →
+`scripts/replay-wav.ts --analyze`; the replay reproduces the live counters
+exactly: 31 bursts, 0 ok / 9 hdr-fail / 81 pay-fail):
+
+1. **Brick wall above ~14.5 kHz** — per-group training SNR drops from
+   +17…24 dB (2–13 kHz) to 0.6 / −2.5 / −10.8 / −17.5 / −25.7 dB
+   (14.5→19 kHz groups). Far harsher than the Phase 2 phone speaker model.
+2. **Training/data quality gap ≈ 10 dB** — on the *good* carriers, training
+   symbols measure 17–24 dB but data-symbol EVM implies only 4–11 dB, flat
+   from the first data symbol. The chanest noise estimate is the difference
+   of two identical training symbols, so *signal-correlated* distortion
+   cancels there while data symbols expose it. Fingerprint of a TX-side
+   dynamic processor (iOS speaker protection / limiter) rather than the room.
+3. Corrected drift wobbles 25–60 ppm burst-to-burst (same clock pair) —
+   consistent with distortion biasing the estimator, not real clock motion.
+
+Device rate on the iPhone reads 48000 Hz — TX resampling ruled out.
+Next hardware experiment: iPhone at ~50% and ~25% media volume (limiter
+drive-dependence); sim work queued: add a speaker-protection impairment that
+reproduces the train/data EVM gap, then harden CSI against it (Phase 7).
